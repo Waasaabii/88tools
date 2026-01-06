@@ -1,8 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 
 // API 响应数据类型 - 修正为实际的 API 结构
+// API 可能返回的状态类型（包括 error）
+type ServiceStatus = 'operational' | 'degraded' | 'failed' | 'maintenance' | 'down' | 'error'
+
 interface TimelineEntry {
-    status: 'operational' | 'degraded' | 'failed' | 'maintenance' | 'down'
+    status: ServiceStatus
     latency_ms: number
     ping_latency_ms: number
     checked_at: string
@@ -10,7 +13,7 @@ interface TimelineEntry {
 }
 
 interface LatestStatus {
-    status: 'operational' | 'degraded' | 'failed' | 'maintenance' | 'down'
+    status: ServiceStatus
     latency_ms: number
     ping_latency_ms: number
     checked_at: string
@@ -149,13 +152,23 @@ export function useServiceStatus(enabled: boolean = true): ServiceStatusResult {
         // 启动定时刷新（全局单例）
         if (!refreshInterval) {
             refreshInterval = setInterval(() => {
-                fetchStatusShared().catch(() => {})
+                fetchStatusShared().catch(() => { })
             }, 30 * 1000)
         }
+
+        // Tab 切回时刷新服务状态
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'visible') {
+                console.log('[88tools] Tab 切回，刷新服务状态')
+                fetchStatusShared().catch(() => { })
+            }
+        }
+        document.addEventListener('visibilitychange', handleVisibilityChange)
 
         return () => {
             subscribers.delete(syncFromCache)
             subscriberCount--
+            document.removeEventListener('visibilitychange', handleVisibilityChange)
 
             // 所有订阅者都取消后，清理定时器
             if (subscriberCount === 0 && refreshInterval) {

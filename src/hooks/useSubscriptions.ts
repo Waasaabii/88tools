@@ -5,6 +5,7 @@ import { useState, useCallback, useRef } from 'react'
 interface ApiSubscriptionPlan {
     creditLimit: number
     subscriptionName: string
+    planType: string  // 'MONTHLY' = 订阅制(可重置), 'PAY_PER_USE' = 按量付费(不可重置)
 }
 
 interface ApiSubscription {
@@ -106,7 +107,12 @@ async function fetchSubscriptionsFromApi(): Promise<SubscriptionInfo[] | null> {
         }
 
         return result.data
-            .filter(sub => sub.isActive && sub.resetTimes > 0) // 只显示活跃且可重置的订阅
+            .filter(sub =>
+                sub.isActive &&
+                sub.subscriptionStatus === '活跃中' &&  // 必须是正在活跃的
+                sub.resetTimes > 0 &&                   // 有重置次数
+                sub.subscriptionPlan?.planType !== 'PAY_PER_USE'  // 排除按量付费(PAYGO)
+            )
             .map(mapApiToSubscriptionInfo)
     } catch (error) {
         console.error('[88tools] API 获取订阅失败:', error)

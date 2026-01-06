@@ -78,7 +78,7 @@ const DEFAULT_CONFIG: EnhanceConfig = {
     autoRefreshEnabled: false,
     autoRefreshInterval: 30,
     scheduledResetEnabled: false,
-    scheduledResetTimes: ['00:00', '12:00'],
+    scheduledResetTimes: ['18:51', '23:52'],
     panelMinimized: true, // 默认隐藏
     showServiceStatus: true,
     panelPosition: null, // null 表示使用默认位置
@@ -243,18 +243,76 @@ export function EnhanceManager() {
             return
         }
 
-        // 1. 刷新订阅数据
+        // 1. 刷新订阅数据并获取最新数据
         addLog('步骤 1: 刷新订阅数据...')
-        await scanSubscriptions()
 
-        // 等待扫描完成
-        await new Promise(r => setTimeout(r, 1000))
+        // 直接调用 API 获取最新数据，避免闭包问题
+        const token = localStorage.getItem('authToken')
+        if (!token) {
+            addLog('错误: 未找到 authToken，无法执行重置')
+            addLog('========== 重置结束 ==========')
+            return
+        }
+
+        let latestSubscriptions: SubscriptionInfo[] = []
+        try {
+            const response = await fetch('/admin-api/cc-admin/system/subscription/my', {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Accept': 'application/json',
+                }
+            })
+            if (response.ok) {
+                const result = await response.json()
+                if (result.ok && Array.isArray(result.data)) {
+                    // 过滤并映射数据（与 useSubscriptions 相同逻辑）
+                    latestSubscriptions = result.data
+                        .filter((sub: { isActive: boolean; subscriptionStatus: string; resetTimes: number; subscriptionPlan?: { planType?: string } }) =>
+                            sub.isActive &&
+                            sub.subscriptionStatus === '活跃中' &&
+                            sub.resetTimes > 0 &&
+                            sub.subscriptionPlan?.planType !== 'PAY_PER_USE'
+                        )
+                        .map((api: { id: number; subscriptionPlanName: string; billingCycleDesc: string; canResetNow: boolean; nextResetAvailableAt: string | null; resetTimes: number; currentCredits: number; subscriptionPlan: { creditLimit: number } }) => {
+                            // 解析冷却状态
+                            let isOnCooldown = false
+                            if (api.nextResetAvailableAt) {
+                                const nextResetDate = new Date(api.nextResetAvailableAt.replace(' ', 'T'))
+                                isOnCooldown = nextResetDate > new Date()
+                            }
+                            return {
+                                id: String(api.id),
+                                backendId: String(api.id),
+                                name: api.subscriptionPlanName,
+                                type: api.billingCycleDesc,
+                                balance: `$${api.currentCredits.toFixed(2)} / $${api.subscriptionPlan.creditLimit.toFixed(2)}`,
+                                balancePercent: Math.round((api.currentCredits / api.subscriptionPlan.creditLimit) * 100),
+                                canReset: api.canResetNow && api.resetTimes > 0 && !isOnCooldown,
+                                isOnCooldown,
+                                resetCount: api.resetTimes,
+                                hasResetButton: api.resetTimes > 0,
+                                daysRemaining: 0,
+                            }
+                        })
+                    addLog(`获取到 ${latestSubscriptions.length} 个可重置订阅`)
+                }
+            }
+        } catch (error) {
+            addLog('警告: 获取最新订阅数据失败，使用缓存数据')
+            latestSubscriptions = subscriptions
+        }
+
+        // 如果没有获取到数据，使用当前状态
+        if (latestSubscriptions.length === 0) {
+            latestSubscriptions = subscriptions
+        }
 
         let resetCount = 0
         let skipCount = 0
         let errorCount = 0
 
-        for (const sub of subscriptions) {
+        for (const sub of latestSubscriptions) {
             if (!selectedSubscriptionIds.has(sub.id)) continue
 
             // 非强制模式下检查是否可重置
@@ -273,13 +331,9 @@ export function EnhanceManager() {
             try {
                 addLog(`重置 [${sub.name}]: 发送请求...${force && sub.isOnCooldown ? ' (强制)' : ''}`)
 
-                // 获取 token
-                const token = localStorage.getItem('authToken')
                 const headers: HeadersInit = {
-                    'Content-Type': 'application/json'
-                }
-                if (token) {
-                    headers['Authorization'] = `Bearer ${token}`
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
                 }
 
                 const response = await fetch(`/admin-api/cc-admin/system/subscription/my/reset-credits/${sub.backendId}`, {
@@ -306,7 +360,7 @@ export function EnhanceManager() {
             }
         }
 
-        addLog('步骤 2: 刷新订阅数据...')
+        addLog('步骤 2: 刷新订阅列表...')
         await scanSubscriptions()
 
         addLog(`========== 重置完成 ==========`)
@@ -367,7 +421,7 @@ export function EnhanceManager() {
     })
 
     // 定时重置 - 先跳转到订阅页，再刷新，再重置
-    const { nextResetTime, status: resetStatus } = useScheduledReset({
+    const { nextResetTime, remainingMs, isPreciseMode, status: resetStatus } = useScheduledReset({
         enabled: config.scheduledResetEnabled,
         times: config.scheduledResetTimes,
         onReset: () => {
@@ -380,8 +434,8 @@ export function EnhanceManager() {
                 return // 跳转后脚本会重新加载，在 useEffect 中检查标记并执行
             }
 
-            // 已在订阅页面，直接执行重置
-            executeResetOperation()
+            // 已在订阅页面，直接执行重置（使用 force 模式，即使冷却中也尝试）
+            executeResetOperation(true)
         }
     })
 
@@ -515,6 +569,8 @@ export function EnhanceManager() {
                 currentPath={currentPath}
                 nextRefreshTime={nextRefreshTime}
                 nextResetTime={nextResetTime}
+                remainingMs={remainingMs}
+                isPreciseMode={isPreciseMode}
                 resetStatus={resetStatus}
                 resetLogs={logs}
                 onClearLogs={clearLogs}

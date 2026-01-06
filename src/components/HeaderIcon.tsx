@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import logoUrl from '/logo.gif'
+import logoUrl from '../assets/logo.gif'
 
 interface HeaderIconProps {
     onClick: () => void

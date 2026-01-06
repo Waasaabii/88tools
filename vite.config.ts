@@ -4,6 +4,10 @@ import monkey from 'vite-plugin-monkey'
 
 // https://vite.dev/config/
 export default defineConfig({
+  build: {
+    // 内联小于 300KB 的资源为 base64
+    assetsInlineLimit: 300 * 1024,
+  },
   plugins: [
     react(),
     monkey({

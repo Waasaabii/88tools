@@ -224,13 +224,23 @@ export function ServiceStatusCard({ data, isLoading, error, onRefresh, lastUpdat
 
 // 单个服务项卡片 - 匹配源站样式
 function ServiceItemCard({ provider }: { provider: ServiceProvider }) {
-    const status = provider.latest?.status || 'unknown'
+    const [hoveredEntry, setHoveredEntry] = useState<{ entry: typeof provider.timeline[0], index: number, x: number } | null>(null)
 
-    // 使用 statistics.uptime_percent 获取可用性
-    const uptime = Math.round(provider.statistics?.uptime_percent || 0)
-
-    // 使用 timeline 数组（不是 history）
+    // 使用 timeline 数组
     const timeline = provider.timeline || []
+
+    // 从 timeline 计算 uptime 百分比（统计 operational 状态占比）
+    const uptime = timeline.length > 0
+        ? (timeline.filter(e => e.status === 'operational').length / timeline.length) * 100
+        : 0
+    const uptimeDisplay = uptime === 100 ? '100.0' : uptime.toFixed(1)
+
+    // 根据 uptime 百分比决定颜色
+    const getUptimeColor = (percent: number) => {
+        if (percent >= 99) return '#10b981' // 绿色
+        if (percent >= 90) return '#f59e0b' // 黄色
+        return '#ef4444' // 红色
+    }
 
     return (
         <div style={{
@@ -239,59 +249,160 @@ function ServiceItemCard({ provider }: { provider: ServiceProvider }) {
             background: 'var(--card)',
             padding: '16px',
             transition: 'box-shadow 0.15s',
+            position: 'relative',
         }}>
             {/* 服务信息头部 */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <h3 style={{ fontSize: '14px', fontWeight: 500, margin: 0 }}>{provider.name}</h3>
-                    <span style={{
-                        fontSize: '10px',
-                        padding: '2px 6px',
-                        borderRadius: '4px',
-                        background: 'var(--muted)',
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '12px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    {/* 服务名称和类型标签 */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <h3 style={{ fontSize: '14px', fontWeight: 600, margin: 0 }}>{provider.name}</h3>
+                        <span style={{
+                            fontSize: '10px',
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                            background: 'var(--muted)',
+                            color: 'var(--muted-foreground)',
+                            textTransform: 'capitalize',
+                        }}>
+                            {provider.type}
+                        </span>
+                    </div>
+                    {/* Provider 和 Model 信息 */}
+                    <div style={{
+                        fontSize: '11px',
                         color: 'var(--muted-foreground)',
-                        textTransform: 'capitalize',
+                        fontFamily: 'ui-monospace, monospace',
                     }}>
-                        {provider.type}
-                    </span>
+                        {provider.model}
+                    </div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {/* Uptime 百分比 - 匹配源站样式 */}
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '2px' }}>
                     <span style={{
-                        width: '8px',
-                        height: '8px',
-                        borderRadius: '50%',
-                        background: getStatusColor(status),
-                    }} />
-                    <span style={{ fontSize: '12px', color: 'var(--muted-foreground)' }}>
-                        {uptime}% 可用
+                        fontSize: '16px',
+                        fontWeight: 600,
+                        fontFamily: 'ui-monospace, monospace',
+                        color: getUptimeColor(uptime),
+                    }}>
+                        {uptimeDisplay}%
+                    </span>
+                    <span style={{
+                        fontSize: '9px',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.05em',
+                        color: 'var(--muted-foreground)',
+                    }}>
+                        UPTIME
                     </span>
                 </div>
             </div>
 
-            {/* 60 分钟时间线 - 使用 timeline 字段 */}
+            {/* 60 分钟时间线 - 响应式占满宽度 */}
             {timeline.length > 0 ? (
                 <>
-                    <div style={{ display: 'flex', alignItems: 'center', height: '24px', gap: '1px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '2px', position: 'relative', overflow: 'visible', height: '20px' }}>
                         {timeline.slice(0, 60).reverse().map((entry, index) => (
                             <div
                                 key={index}
-                                title={`${new Date(entry.checked_at).toLocaleTimeString()} - ${entry.status} (${entry.latency_ms}ms)`}
                                 style={{
                                     flex: 1,
                                     height: '20px',
-                                    borderRadius: '2px',
+                                    borderRadius: '3px',
                                     background: getStatusColor(entry.status),
-                                    opacity: entry.status === 'operational' ? 0.8 : 1,
-                                    transition: 'transform 0.1s',
+                                    opacity: entry.status === 'operational' ? 0.75 : 1,
+                                    transition: 'transform 0.15s ease, opacity 0.15s',
                                     cursor: 'pointer',
+                                    transform: hoveredEntry?.index === index ? 'scaleY(1.2)' : 'scaleY(1)',
                                 }}
-                                onMouseEnter={(e) => (e.currentTarget.style.transform = 'scaleY(1.25)')}
-                                onMouseLeave={(e) => (e.currentTarget.style.transform = 'scaleY(1)')}
+                                onMouseEnter={(e) => {
+                                    const rect = e.currentTarget.getBoundingClientRect()
+                                    const parentRect = e.currentTarget.parentElement?.getBoundingClientRect()
+                                    setHoveredEntry({
+                                        entry,
+                                        index,
+                                        x: parentRect ? rect.left - parentRect.left + rect.width / 2 : 0
+                                    })
+                                }}
+                                onMouseLeave={() => setHoveredEntry(null)}
                             />
                         ))}
+
+                        {/* 自定义 Tooltip - 跟随圆点位置 */}
+                        {hoveredEntry && (
+                            <div style={{
+                                position: 'absolute',
+                                bottom: 'calc(100% + 8px)',
+                                left: `${hoveredEntry.x}px`,
+                                transform: 'translateX(-50%)',
+                                padding: '8px 12px',
+                                borderRadius: '6px',
+                                background: '#1e293b',
+                                color: '#fff',
+                                fontSize: '12px',
+                                zIndex: 1000,
+                                boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                                pointerEvents: 'none',
+                            }}>
+                                {/* 日期时间 */}
+                                <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.5)', marginBottom: '4px' }}>
+                                    {new Date(hoveredEntry.entry.checked_at).toLocaleString('zh-CN', {
+                                        year: 'numeric',
+                                        month: '2-digit',
+                                        day: '2-digit',
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                        second: '2-digit'
+                                    })}
+                                </div>
+                                {/* 状态 */}
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    <span style={{
+                                        width: '6px',
+                                        height: '6px',
+                                        borderRadius: '50%',
+                                        background: getStatusColor(hoveredEntry.entry.status),
+                                    }} />
+                                    <span style={{ fontWeight: 500 }}>
+                                        {getStatusTextForTooltip(hoveredEntry.entry.status)}
+                                    </span>
+                                </div>
+                                {/* Message 内容 - 如果有错误信息则显示 */}
+                                {hoveredEntry.entry.message && hoveredEntry.entry.message !== 'OK' && (
+                                    <div style={{
+                                        fontSize: '10px',
+                                        color: '#fca5a5',
+                                        marginTop: '4px',
+                                        whiteSpace: 'normal',
+                                        wordBreak: 'break-word',
+                                        maxWidth: '250px',
+                                    }}>
+                                        {hoveredEntry.entry.message}
+                                    </div>
+                                )}
+                                {/* 延迟信息 */}
+                                {hoveredEntry.entry.latency_ms > 0 && (
+                                    <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.5)', marginTop: '4px' }}>
+                                        延迟: {hoveredEntry.entry.latency_ms}ms
+                                    </div>
+                                )}
+                                {/* 小三角 */}
+                                <div style={{
+                                    position: 'absolute',
+                                    bottom: '-4px',
+                                    left: '50%',
+                                    transform: 'translateX(-50%)',
+                                    width: 0,
+                                    height: 0,
+                                    borderLeft: '5px solid transparent',
+                                    borderRight: '5px solid transparent',
+                                    borderTop: '5px solid #1e293b',
+                                }} />
+                            </div>
+                        )}
                     </div>
                     {/* 时间标签 */}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px' }}>
                         <span style={{ fontSize: '9px', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--muted-foreground)' }}>
                             60分钟前
                         </span>
@@ -309,12 +420,30 @@ function ServiceItemCard({ provider }: { provider: ServiceProvider }) {
     )
 }
 
+// Tooltip 状态文字
+function getStatusTextForTooltip(status: string): string {
+    switch (status) {
+        case 'operational': return '正常'
+        case 'degraded': return '响应慢'
+        case 'failed':
+        case 'error': return '故障'
+        case 'down': return '不可用'
+        case 'maintenance': return '维护中'
+        default: return status
+    }
+}
+
 // 获取整体状态
 function getOverallStatus(data: StatusApiResponse): string {
     // 检查所有 provider 的 latest 状态
     if (!data.providers?.length) return 'unknown'
 
-    const hasError = data.providers.some(p => p.latest?.status === 'failed' || p.latest?.status === 'down')
+    // 检查是否有错误状态（包括 error、failed、down）
+    const hasError = data.providers.some(p =>
+        p.latest?.status === 'failed' ||
+        p.latest?.status === 'down' ||
+        p.latest?.status === 'error'  // API 返回的 error 状态
+    )
     const hasDegraded = data.providers.some(p => p.latest?.status === 'degraded')
 
     if (hasError) return 'failed'
@@ -327,7 +456,8 @@ function getStatusText(status: string): string {
     switch (status) {
         case 'operational': return '全部正常'
         case 'degraded': return '部分服务异常'
-        case 'failed': return '服务故障'
+        case 'failed':
+        case 'error': return '服务故障 ps:大米树又去洗脚了'  // API 返回的 error 状态
         case 'down': return '服务不可用'
         case 'maintenance': return '维护中'
         default: return '未知状态'
@@ -340,6 +470,7 @@ function getStatusColor(status: string): string {
         case 'operational': return '#10b981' // emerald-500
         case 'degraded': return '#f59e0b' // amber-500
         case 'failed':
+        case 'error':  // API 返回的 error 状态
         case 'down': return '#ef4444' // red-500
         case 'maintenance': return '#6366f1' // indigo-500
         default: return '#6b7280' // gray-500

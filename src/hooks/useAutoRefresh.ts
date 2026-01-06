@@ -46,10 +46,15 @@ export function useAutoRefresh(options: AutoRefreshOptions): AutoRefreshResult {
 
         console.log('[88tools] 自动刷新已启用，间隔:', interval, '秒')
 
+        // 重置目标时间（用于初始化和 tab 切回）
+        const resetTargetTime = () => {
+            const newTarget = Date.now() + intervalRef.current * 1000
+            targetTimeRef.current = newTarget
+            setNextRefreshTime(newTarget)
+        }
+
         // 设置初始目标时间
-        const initialTarget = Date.now() + interval * 1000
-        targetTimeRef.current = initialTarget
-        setNextRefreshTime(initialTarget)
+        resetTargetTime()
 
         // 每秒检查是否需要刷新
         timerRef.current = setInterval(() => {
@@ -57,12 +62,18 @@ export function useAutoRefresh(options: AutoRefreshOptions): AutoRefreshResult {
             if (now >= targetTimeRef.current && targetTimeRef.current > 0) {
                 console.log('[88tools] 触发刷新')
                 onRefreshRef.current()
-                // 设置下一次目标时间
-                const newTarget = Date.now() + intervalRef.current * 1000
-                targetTimeRef.current = newTarget
-                setNextRefreshTime(newTarget)
+                resetTargetTime()
             }
         }, 1000)
+
+        // Tab 切回时重置目标时间（不补偿执行，只刷新状态）
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'visible') {
+                console.log('[88tools] Tab 切回，重置自动刷新计时')
+                resetTargetTime()
+            }
+        }
+        document.addEventListener('visibilitychange', handleVisibilityChange)
 
         return () => {
             console.log('[88tools] 清理自动刷新定时器')
@@ -70,6 +81,7 @@ export function useAutoRefresh(options: AutoRefreshOptions): AutoRefreshResult {
                 clearInterval(timerRef.current)
                 timerRef.current = null
             }
+            document.removeEventListener('visibilitychange', handleVisibilityChange)
         }
     }, [enabled, interval])
 

@@ -2,7 +2,7 @@ import type { EnhanceConfig } from './EnhanceManager'
 import { REFRESH_INTERVAL_TEMPLATES } from './EnhanceManager'
 import type { SubscriptionInfo } from '../hooks/useSubscriptions'
 import { useState, useRef, useEffect, useCallback, memo, useMemo } from 'react'
-import logoUrl from '/logo.gif'
+import logoUrl from '../assets/logo.gif'
 
 interface ControlPanelProps {
     config: EnhanceConfig
@@ -10,6 +10,8 @@ interface ControlPanelProps {
     currentPath: string
     nextRefreshTime: number | null // 时间戳
     nextResetTime: string | null
+    remainingMs: number | null      // 剩余毫秒数
+    isPreciseMode: boolean          // 是否在精准模式（≤30分钟）
     resetStatus: 'idle' | 'waiting' | 'cooling'
     resetLogs: string[]
     onClearLogs: () => void
@@ -35,6 +37,8 @@ export function ControlPanel({
     currentPath,
     nextRefreshTime,
     nextResetTime,
+    remainingMs,
+    isPreciseMode,
     resetStatus,
     resetLogs,
     onClearLogs,
@@ -325,6 +329,8 @@ export function ControlPanel({
                     currentPath={currentPath}
                     nextRefreshTime={nextRefreshTime}
                     nextResetTime={nextResetTime}
+                    remainingMs={remainingMs}
+                    isPreciseMode={isPreciseMode}
                     resetStatus={resetStatus}
                     resetLogs={resetLogs}
                     onClearLogs={onClearLogs}
@@ -422,6 +428,52 @@ const ControlPanelContent = memo(function ControlPanelContent(props: ControlPane
     // 可重置订阅数量
     const resettableCount = props.subscriptions.filter(s => s.canReset).length
 
+    // 格式化倒计时
+    const formatCountdown = (ms: number, isPrecise: boolean): string => {
+        if (ms <= 0) return '0:00'
+        const totalSeconds = Math.floor(ms / 1000)
+        const hours = Math.floor(totalSeconds / 3600)
+        const minutes = Math.floor((totalSeconds % 3600) / 60)
+        const seconds = totalSeconds % 60
+
+        if (isPrecise) {
+            if (hours > 0) return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+            return `${minutes}:${seconds.toString().padStart(2, '0')}`
+        } else {
+            if (hours > 0) return `${hours}h${minutes > 0 ? `${minutes}m` : ''}`
+            return `${minutes}m`
+        }
+    }
+
+    // 自动刷新倒计时（设置 tab）- 实时更新
+    const [refreshCountdown, setRefreshCountdown] = useState<string | null>(null)
+    useEffect(() => {
+        if (!props.config.autoRefreshEnabled || !props.nextRefreshTime) {
+            setRefreshCountdown(null)
+            return
+        }
+
+        const calculateCountdown = () => {
+            const remaining = props.nextRefreshTime! - Date.now()
+            if (remaining <= 0) return null
+            return `${Math.floor(remaining / 1000)}s`
+        }
+
+        setRefreshCountdown(calculateCountdown())
+        const interval = setInterval(() => {
+            setRefreshCountdown(calculateCountdown())
+        }, 1000)
+
+        return () => clearInterval(interval)
+    }, [props.config.autoRefreshEnabled, props.nextRefreshTime])
+
+    // 订阅重置倒计时（重置 tab）
+    const resetCountdown = useMemo(() => {
+        if (!props.config.scheduledResetEnabled || props.remainingMs === null) return null
+        if (props.resetStatus === 'cooling') return '冷却'
+        return formatCountdown(props.remainingMs, props.isPreciseMode)
+    }, [props.config.scheduledResetEnabled, props.remainingMs, props.isPreciseMode, props.resetStatus])
+
     return (
         <div className="flex flex-col h-full">
             {/* Tab Switcher - Capsule Style (3 Tabs) */}
@@ -459,13 +511,16 @@ const ControlPanelContent = memo(function ControlPanelContent(props: ControlPane
                         onClick={() => setActiveTab('settings')}
                         icon={<IconSettings style={{ width: '14px', height: '14px' }} />}
                         label="设置"
+                        countdown={refreshCountdown}
                     />
                     <TabButton
                         active={activeTab === 'reset'}
                         onClick={() => setActiveTab('reset')}
                         icon={<IconRefreshCw style={{ width: '14px', height: '14px' }} />}
                         label="重置"
-                        badge={resettableCount > 0 ? resettableCount : undefined}
+                        countdown={resetCountdown}
+                        isUrgent={props.isPreciseMode}
+                        badge={!resetCountdown && resettableCount > 0 ? resettableCount : undefined}
                     />
                     <TabButton
                         active={activeTab === 'logs'}
@@ -490,7 +545,6 @@ const ControlPanelContent = memo(function ControlPanelContent(props: ControlPane
 
 function SettingsPanel({
     config, onConfigChange, currentPath,
-    nextRefreshTime,
 }: ControlPanelProps) {
     return (
         <div className="divide-y divide-border/40">
@@ -524,11 +578,7 @@ function SettingsPanel({
 
                 <SettingRow
                     label="自动刷新"
-                    description={
-                        config.autoRefreshEnabled ? (
-                            <RefreshCountdownDisplay nextRefreshTime={nextRefreshTime} />
-                        ) : '未启用'
-                    }
+                    description={config.autoRefreshEnabled ? '已启用' : '未启用'}
                     control={
                         <div className="flex items-center gap-2">
                             {config.autoRefreshEnabled && (
@@ -557,7 +607,7 @@ function SettingsPanel({
 // 重置面板 - 订阅选择和定时重置设置
 function ResetPanel({
     config, onConfigChange,
-    nextResetTime, resetStatus,
+    remainingMs, isPreciseMode, resetStatus,
     subscriptions, selectedSubscriptionIds,
     onToggleSubscription, onSelectAllSubscriptions, onDeselectAllSubscriptions,
     onScanSubscriptions, isScanning,
@@ -713,7 +763,8 @@ function ResetPanel({
                     description={
                         config.scheduledResetEnabled ? (
                             <ResetCountdownDisplay
-                                nextResetTime={nextResetTime}
+                                remainingMs={remainingMs}
+                                isPreciseMode={isPreciseMode}
                                 resetStatus={resetStatus}
                             />
                         ) : '未启用'
@@ -870,19 +921,29 @@ function SubscriptionCard({
     )
 }
 
-// 精确冷却倒计时组件
+// 精确冷却倒计时组件（性能优化版）
 const CooldownCountdown = memo(function CooldownCountdown({
     endTime
 }: {
     endTime: Date | string  // 支持字符串（从持久化恢复时）
 }) {
     const [remaining, setRemaining] = useState('')
+    const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
     useEffect(() => {
         const update = () => {
             const now = new Date()
-            // 兼容字符串和 Date 对象
+            // 兼容字符串和 Date 对象，同时处理 null/undefined
+            if (!endTime) {
+                setRemaining('可重置')
+                return
+            }
             const endDate = typeof endTime === 'string' ? new Date(endTime) : endTime
+            // 检查是否为有效 Date
+            if (!(endDate instanceof Date) || isNaN(endDate.getTime())) {
+                setRemaining('可重置')
+                return
+            }
             const diffMs = endDate.getTime() - now.getTime()
 
             if (diffMs <= 0) {
@@ -892,18 +953,28 @@ const CooldownCountdown = memo(function CooldownCountdown({
 
             const hours = Math.floor(diffMs / 3600000)
             const mins = Math.floor((diffMs % 3600000) / 60000)
-            const secs = Math.floor((diffMs % 60000) / 1000)
 
+            // 30分钟阈值
+            const isWithin30Min = diffMs <= 30 * 60 * 1000
+
+            // 中文格式显示（不显示秒）
             if (hours > 0) {
-                setRemaining(`${hours}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`)
+                setRemaining(`${hours}小时${mins}分`)
             } else {
-                setRemaining(`${mins}:${secs.toString().padStart(2, '0')}`)
+                setRemaining(`${mins}分`)
             }
+
+            // 动态更新间隔：≤30分钟=60秒，>30分钟=5分钟
+            const interval = isWithin30Min ? 60000 : 300000
+            timerRef.current = setTimeout(update, interval)
         }
 
         update()
-        const timer = setInterval(update, 1000)
-        return () => clearInterval(timer)
+        return () => {
+            if (timerRef.current) {
+                clearTimeout(timerRef.current)
+            }
+        }
     }, [endTime])
 
     const isReady = remaining === '可重置'
@@ -1098,7 +1169,15 @@ function LogsPanel({ logs, onClear }: { logs: string[], onClear: () => void }) {
 
 // --- Components ---
 
-function TabButton({ active, onClick, icon, label, badge }: { active: boolean, onClick: () => void, icon: React.ReactNode, label: string, badge?: number }) {
+function TabButton({ active, onClick, icon, label, badge, countdown, isUrgent }: {
+    active: boolean
+    onClick: () => void
+    icon: React.ReactNode
+    label: string
+    badge?: number
+    countdown?: string | null
+    isUrgent?: boolean
+}) {
     return (
         <button
             onClick={onClick}
@@ -1108,7 +1187,7 @@ function TabButton({ active, onClick, icon, label, badge }: { active: boolean, o
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                gap: '6px',
+                gap: '4px',
                 height: '28px',
                 fontSize: '12px',
                 fontWeight: 500,
@@ -1123,7 +1202,27 @@ function TabButton({ active, onClick, icon, label, badge }: { active: boolean, o
         >
             {icon}
             {label}
-            {badge !== undefined && (
+            {countdown && (
+                <span
+                    className={isUrgent ? 'countdown-pulse' : ''}
+                    style={{
+                        fontSize: '10px',
+                        fontWeight: 600,
+                        fontFamily: 'monospace',
+                        padding: '1px 5px',
+                        borderRadius: '6px',
+                        backgroundColor: active
+                            ? (isUrgent ? 'rgba(220, 38, 38, 0.15)' : 'rgba(5, 150, 105, 0.15)')
+                            : 'rgba(100,116,139,0.1)',
+                        color: active
+                            ? (isUrgent ? '#dc2626' : '#059669')
+                            : '#64748b',
+                    }}
+                >
+                    {countdown}
+                </span>
+            )}
+            {badge !== undefined && !countdown && (
                 <span
                     style={{
                         marginLeft: '2px',
@@ -1159,118 +1258,69 @@ function SettingRow({ label, description, control }: { label: string, descriptio
     )
 }
 
-// 独立倒计时组件 - 只有这个组件每秒重渲染，不影响整个面板
+// 独立倒计时组件 - 接收预计算的倒计时数据，不再自己计算
 const ResetCountdownDisplay = memo(function ResetCountdownDisplay({
-    nextResetTime,
+    remainingMs,
+    isPreciseMode,
     resetStatus,
 }: {
-    nextResetTime: string | null
+    remainingMs: number | null
+    isPreciseMode: boolean
     resetStatus: 'idle' | 'waiting' | 'cooling'
 }) {
-    const [countdown, setCountdown] = useState('')
+    // 格式化倒计时显示
+    const formatCountdown = (ms: number, isPrecise: boolean): string => {
+        if (ms <= 0) return '即将执行...'
 
-    useEffect(() => {
-        if (resetStatus !== 'waiting' || !nextResetTime) {
-            setCountdown('')
-            return
+        const totalSeconds = Math.floor(ms / 1000)
+        const hours = Math.floor(totalSeconds / 3600)
+        const minutes = Math.floor((totalSeconds % 3600) / 60)
+        const seconds = totalSeconds % 60
+
+        if (isPrecise) {
+            // 精准模式：显示 mm:ss 或 h:mm:ss
+            if (hours > 0) {
+                return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+            }
+            return `${minutes}:${seconds.toString().padStart(2, '0')}`
+        } else {
+            // 非精准模式：显示 Xh Xm
+            if (hours > 0) {
+                return `${hours}h${minutes > 0 ? ` ${minutes}m` : ''}`
+            }
+            return `${minutes}m`
         }
-
-        const calculateCountdown = () => {
-            const now = new Date()
-            const [hours, minutes] = nextResetTime.split(':').map(Number)
-
-            const target = new Date()
-            target.setHours(hours, minutes, 0, 0)
-
-            // 如果目标时间已过，设为明天
-            if (target <= now) {
-                target.setDate(target.getDate() + 1)
-            }
-
-            const diffMs = target.getTime() - now.getTime()
-            const diffSeconds = Math.floor(diffMs / 1000)
-
-            if (diffSeconds <= 0) {
-                return '即将执行...'
-            }
-
-            const h = Math.floor(diffSeconds / 3600)
-            const m = Math.floor((diffSeconds % 3600) / 60)
-            const s = diffSeconds % 60
-
-            if (h > 0) {
-                return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
-            }
-            return `${m}:${s.toString().padStart(2, '0')}`
-        }
-
-        setCountdown(calculateCountdown())
-        const interval = setInterval(() => {
-            setCountdown(calculateCountdown())
-        }, 1000)
-
-        return () => clearInterval(interval)
-    }, [nextResetTime, resetStatus])
+    }
 
     if (resetStatus === 'cooling') {
         return <span style={{ color: '#d97706', fontWeight: 500 }}>冷却中</span>
     }
 
-    if (resetStatus === 'waiting' && nextResetTime) {
+    if (resetStatus === 'waiting' && remainingMs !== null) {
+        const countdown = formatCountdown(remainingMs, isPreciseMode)
         return (
             <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <span style={{ color: '#059669', fontFamily: 'monospace', fontWeight: 600 }}>{countdown}</span>
+                <span style={{
+                    color: isPreciseMode ? '#dc2626' : '#059669',
+                    fontFamily: 'monospace',
+                    fontWeight: 600,
+                    animation: isPreciseMode ? 'pulse 1s infinite' : 'none',
+                }}>{countdown}</span>
                 <span style={{ color: '#64748b' }}>后执行</span>
+                {!isPreciseMode && (
+                    <span style={{
+                        fontSize: '9px',
+                        color: '#94a3b8',
+                        background: 'rgba(148, 163, 184, 0.1)',
+                        padding: '1px 4px',
+                        borderRadius: '3px',
+                    }}>省电模式</span>
+                )}
             </span>
         )
     }
 
     return <span style={{ color: '#64748b' }}>等待中...</span>
-})
-
-// 自动刷新倒计时组件
-const RefreshCountdownDisplay = memo(function RefreshCountdownDisplay({
-    nextRefreshTime,
-}: {
-    nextRefreshTime: number | null // 时间戳
-}) {
-    const [countdown, setCountdown] = useState('')
-
-    useEffect(() => {
-        if (!nextRefreshTime) {
-            setCountdown('')
-            return
-        }
-
-        const calculateCountdown = () => {
-            const now = Date.now()
-            const diffSeconds = Math.max(0, Math.floor((nextRefreshTime - now) / 1000))
-
-            if (diffSeconds <= 0) {
-                return '刷新中...'
-            }
-
-            return `${diffSeconds}秒`
-        }
-
-        setCountdown(calculateCountdown())
-        const interval = setInterval(() => {
-            setCountdown(calculateCountdown())
-        }, 1000)
-
-        return () => clearInterval(interval)
-    }, [nextRefreshTime])
-
-    if (!nextRefreshTime) {
-        return <span style={{ color: '#64748b' }}>等待中...</span>
-    }
-
-    return (
-        <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <span style={{ color: '#059669', fontFamily: 'monospace', fontWeight: 600 }}>{countdown}</span>
-            <span style={{ color: '#64748b' }}>后刷新</span>
-        </span>
-    )
 })
 
 function Switch({ checked, onChange }: { checked: boolean; onChange: (c: boolean) => void }) {
@@ -1480,6 +1530,42 @@ function ScheduleTimeConfig({ times, onChange }: { times: string[]; onChange: (t
                 )}
             </div>
 
+            {/* Quick Add Presets */}
+            {(['18:51', '23:52'].some(t => !times.includes(t))) && (
+                <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    marginTop: '8px',
+                    paddingTop: '8px',
+                    borderTop: '1px dashed rgba(199,210,254,0.5)',
+                }}>
+                    <span style={{ fontSize: '10px', color: '#94a3b8' }}>快捷添加:</span>
+                    {['18:51', '23:52'].map(preset => (
+                        !times.includes(preset) && (
+                            <button
+                                key={preset}
+                                onClick={() => onChange([...times, preset].sort())}
+                                style={{
+                                    padding: '2px 8px',
+                                    fontSize: '11px',
+                                    fontWeight: 600,
+                                    fontFamily: 'monospace',
+                                    color: '#6366f1',
+                                    backgroundColor: 'rgba(238,242,255,0.8)',
+                                    border: '1px dashed #c7d2fe',
+                                    borderRadius: '6px',
+                                    cursor: 'pointer',
+                                    transition: 'all 150ms',
+                                }}
+                            >
+                                +{preset}
+                            </button>
+                        )
+                    ))}
+                </div>
+            )}
+
             {/* Animation Styles */}
             <style>{`
                 @keyframes slideIn {
@@ -1491,6 +1577,13 @@ function ScheduleTimeConfig({ times, onChange }: { times: string[]; onChange: (t
                         opacity: 1;
                         transform: translateX(0);
                     }
+                }
+                @keyframes countdownPulse {
+                    0%, 100% { opacity: 1; }
+                    50% { opacity: 0.5; }
+                }
+                .countdown-pulse {
+                    animation: countdownPulse 1.5s ease-in-out infinite;
                 }
             `}</style>
         </div>
