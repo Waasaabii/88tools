@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { GM_getValue, GM_setValue } from 'vite-plugin-monkey/dist/client'
 import { ControlPanel } from './ControlPanel'
@@ -21,6 +21,41 @@ const CONFIG_KEYS = {
     PANEL_MINIMIZED: '88tools_v1_panel_minimized',
     PANEL_POSITION: '88tools_v1_panel_position',
     SHOW_SERVICE_STATUS: '88tools_v1_show_service_status',
+    LOGS: '88tools_v1_logs',
+}
+
+// localStorage key 用于跨页面重置标记
+const PENDING_RESET_KEY = '88tools_v1_pending_reset'
+
+// 日志配置
+const LOG_CONFIG = {
+    MAX_ENTRIES: 100,      // 最大条数
+    MAX_BYTES: 50 * 1024,  // 最大字节数 50KB（GM_setValue 通常限制较宽松，但保守起见）
+    PERSIST_DEBOUNCE: 1000, // 持久化防抖延迟（毫秒）
+}
+
+// 加载持久化的日志
+function loadLogs(): string[] {
+    try {
+        const saved = GM_getValue(CONFIG_KEYS.LOGS, []) as string[]
+        return Array.isArray(saved) ? saved : []
+    } catch {
+        return []
+    }
+}
+
+// 裁剪日志以满足大小限制
+function trimLogs(logs: string[]): string[] {
+    let result = logs.slice(-LOG_CONFIG.MAX_ENTRIES)
+
+    // 检查字节大小
+    let totalBytes = JSON.stringify(result).length
+    while (result.length > 0 && totalBytes > LOG_CONFIG.MAX_BYTES) {
+        result = result.slice(1) // 移除最旧的
+        totalBytes = JSON.stringify(result).length
+    }
+
+    return result
 }
 
 // 配置类型
@@ -32,6 +67,7 @@ export interface EnhanceConfig {
     panelMinimized: boolean
     showServiceStatus: boolean
     panelPosition: { x: number; y: number } | null
+    panelSize: { width: number; height: number } | null
 }
 
 // 默认配置
@@ -43,6 +79,7 @@ const DEFAULT_CONFIG: EnhanceConfig = {
     panelMinimized: true, // 默认隐藏
     showServiceStatus: true,
     panelPosition: null, // null 表示使用默认位置
+    panelSize: null, // null 表示默认大小
 }
 
 // 从存储加载配置
@@ -55,6 +92,7 @@ function loadConfig(): EnhanceConfig {
         panelMinimized: GM_getValue(CONFIG_KEYS.PANEL_MINIMIZED, DEFAULT_CONFIG.panelMinimized) as boolean,
         showServiceStatus: GM_getValue(CONFIG_KEYS.SHOW_SERVICE_STATUS, DEFAULT_CONFIG.showServiceStatus) as boolean,
         panelPosition: GM_getValue(CONFIG_KEYS.PANEL_POSITION, DEFAULT_CONFIG.panelPosition) as { x: number; y: number } | null,
+        panelSize: GM_getValue('88tools_v1_panel_size', DEFAULT_CONFIG.panelSize) as { width: number; height: number } | null,
     }
 }
 
@@ -68,6 +106,7 @@ function saveConfigItem<K extends keyof EnhanceConfig>(key: K, value: EnhanceCon
         panelMinimized: CONFIG_KEYS.PANEL_MINIMIZED,
         showServiceStatus: CONFIG_KEYS.SHOW_SERVICE_STATUS,
         panelPosition: CONFIG_KEYS.PANEL_POSITION,
+        panelSize: '88tools_v1_panel_size',
     }
     GM_setValue(keyMap[key], value)
 }
@@ -84,138 +123,207 @@ export const REFRESH_INTERVAL_TEMPLATES = [
 export function EnhanceManager() {
     const [config, setConfig] = useState<EnhanceConfig>(loadConfig)
     const [statusContainer, setStatusContainer] = useState<HTMLElement | null>(null)
-    const [resetLogs, setResetLogs] = useState<string[]>([])
+    const [logs, setLogs] = useState<string[]>(loadLogs)
+
+    // 持久化防抖 ref
+    const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+    const logsRef = useRef(logs)
+    logsRef.current = logs
+
+    // 持久化日志（防抖）
+    const persistLogs = useCallback((newLogs: string[]) => {
+        if (persistTimerRef.current) {
+            clearTimeout(persistTimerRef.current)
+        }
+        persistTimerRef.current = setTimeout(() => {
+            try {
+                GM_setValue(CONFIG_KEYS.LOGS, newLogs)
+            } catch (e) {
+                console.warn('[88tools] 日志持久化失败:', e)
+            }
+        }, LOG_CONFIG.PERSIST_DEBOUNCE)
+    }, [])
 
     // 添加日志（带时间戳）
     const addLog = useCallback((msg: string) => {
         const timestamp = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
         const logEntry = `[${timestamp}] ${msg}`
         console.log(`[88tools] ${logEntry}`)
-        setResetLogs(prev => [...prev.slice(-49), logEntry]) // 最多保留 50 条
-    }, [])
+
+        setLogs(prev => {
+            const newLogs = trimLogs([...prev, logEntry])
+            persistLogs(newLogs)
+            return newLogs
+        })
+    }, [persistLogs])
 
     // 清除日志
     const clearLogs = useCallback(() => {
-        setResetLogs([])
+        setLogs([])
+        try {
+            GM_setValue(CONFIG_KEYS.LOGS, [])
+        } catch (e) {
+            console.warn('[88tools] 清除日志失败:', e)
+        }
     }, [])
+
+    // 执行重置操作的核心函数
+    const executeResetOperation = useCallback(async () => {
+        addLog('========== 定时重置开始 ==========')
+
+        // 1. 先刷新页面获取最新状态
+        addLog('步骤 1: 刷新页面获取最新状态...')
+        const refreshBtn = document.querySelector('button:has(.lucide-refresh-cw)') as HTMLButtonElement
+        if (refreshBtn) {
+            refreshBtn.click()
+            await new Promise(r => setTimeout(r, 2000))
+            addLog('页面已刷新')
+        }
+
+        // 辅助函数：等待对话框关闭
+        const waitForDialogClose = () => new Promise<void>(resolve => {
+            const checkInterval = setInterval(() => {
+                const dialog = document.querySelector('[role="dialog"], [data-state="open"]')
+                if (!dialog) {
+                    clearInterval(checkInterval)
+                    resolve()
+                }
+            }, 200)
+            setTimeout(() => { clearInterval(checkInterval); resolve() }, 3000)
+        })
+
+        // 2. 查找所有订阅卡片和对应的重置按钮
+        addLog('步骤 2: 查找可重置的订阅...')
+        const cards = Array.from(document.querySelectorAll('[data-slot="card"]'))
+        let resetCount = 0
+        let skipCount = 0
+
+        for (const card of cards) {
+            const titleEl = card.querySelector('h4, .font-semibold')
+            const subscriptionName = titleEl?.textContent?.trim() || '未知订阅'
+
+            const buttons = Array.from(card.querySelectorAll('button'))
+            const resetBtn = buttons.find(b =>
+                b.getAttribute('data-slot') === 'tooltip-trigger' &&
+                (b.textContent?.includes('冷却') || b.textContent?.includes('重置'))
+            ) as HTMLButtonElement | undefined
+
+            if (!resetBtn) continue
+
+            if (resetBtn.disabled || resetBtn.textContent?.includes('冷却')) {
+                addLog(`跳过 [${subscriptionName}]: 冷却中`)
+                skipCount++
+                continue
+            }
+
+            addLog(`重置 [${subscriptionName}]: 点击重置按钮...`)
+            resetBtn.click()
+            await new Promise(r => setTimeout(r, 800))
+
+            const dialogBtns = Array.from(document.querySelectorAll('button'))
+            const confirmBtn = dialogBtns.find(b =>
+                b.textContent?.trim() === '重置' &&
+                b.offsetParent !== null &&
+                !b.textContent?.includes('冷却') &&
+                !b.textContent?.includes('额度')
+            ) as HTMLButtonElement | undefined
+
+            if (confirmBtn) {
+                confirmBtn.click()
+                addLog(`重置 [${subscriptionName}]: ✓ 成功`)
+                resetCount++
+                await waitForDialogClose()
+                await new Promise(r => setTimeout(r, 1500))
+            } else {
+                addLog(`重置 [${subscriptionName}]: ✗ 对话框未出现`)
+            }
+        }
+
+        addLog('步骤 3: 刷新页面...')
+        const refreshBtn2 = document.querySelector('button:has(.lucide-refresh-cw)') as HTMLButtonElement
+        if (refreshBtn2) {
+            refreshBtn2.click()
+        }
+
+        addLog(`========== 重置完成 ==========`)
+        addLog(`✓ 成功: ${resetCount} 个, ○ 跳过: ${skipCount} 个`)
+    }, [addLog])
 
     // 路由监听
     const { currentPath, isSubscriptionPage } = useRouteWatch()
 
-    // 服务状态
-    const { data: statusData, isLoading: statusLoading, error: statusError, refresh: refreshStatus, lastUpdated } = useServiceStatus()
+    // 服务状态 - 只在订阅页且开启时运行
+    const { data: statusData, isLoading: statusLoading, error: statusError, refresh: refreshStatus, lastUpdated } = useServiceStatus(
+        isSubscriptionPage && config.showServiceStatus
+    )
 
     // 自动刷新 - 直接点击页面按钮
-    const { countdown: refreshCountdown, nextRefreshTime } = useAutoRefresh({
+    const { nextRefreshTime } = useAutoRefresh({
         enabled: config.autoRefreshEnabled && isSubscriptionPage,
         interval: config.autoRefreshInterval,
         onRefresh: () => {
-            console.log('[88tools] 自动刷新触发')
             // 点击页面上的刷新按钮（包含 lucide-refresh-cw 图标的按钮）
             const refreshBtn = document.querySelector('button:has(.lucide-refresh-cw)') as HTMLButtonElement
             if (refreshBtn) {
                 refreshBtn.click()
-                console.log('[88tools] 已点击页面刷新按钮')
+                addLog('自动刷新: 已刷新页面')
             } else {
                 // 回退：刷新服务状态
                 refreshStatus()
-                console.log('[88tools] 未找到页面刷新按钮，刷新服务状态')
+                addLog('自动刷新: 已刷新服务状态')
             }
         }
     })
 
-    // 定时重置 - 先刷新再重置，跳过冷却中的订阅
-    const { countdown: resetCountdown, nextResetTime, status: resetStatus } = useScheduledReset({
+    // 定时重置 - 先跳转到订阅页，再刷新，再重置
+    const { nextResetTime, status: resetStatus } = useScheduledReset({
         enabled: config.scheduledResetEnabled,
         times: config.scheduledResetTimes,
-        onReset: async () => {
-            addLog('========== 定时重置开始 ==========')
-
-            // 1. 先刷新页面获取最新状态
-            addLog('步骤 1: 刷新页面获取最新状态...')
-            const refreshBtn = document.querySelector('button:has(.lucide-refresh-cw)') as HTMLButtonElement
-            if (refreshBtn) {
-                refreshBtn.click()
-                await new Promise(r => setTimeout(r, 2000)) // 等待刷新完成
-                addLog('页面已刷新')
+        onReset: () => {
+            // 检查是否在订阅页面，如果不在则设置标记并跳转
+            const currentUrl = window.location.pathname
+            if (!currentUrl.includes('my-subscription') && !currentUrl.includes('subscription')) {
+                addLog('当前不在订阅页面，设置标记并跳转...')
+                localStorage.setItem(PENDING_RESET_KEY, Date.now().toString())
+                window.location.href = '/my-subscription'
+                return // 跳转后脚本会重新加载，在 useEffect 中检查标记并执行
             }
 
-            // 辅助函数：等待对话框关闭
-            const waitForDialogClose = () => new Promise<void>(resolve => {
-                const checkInterval = setInterval(() => {
-                    const dialog = document.querySelector('[role="dialog"], [data-state="open"]')
-                    if (!dialog) {
-                        clearInterval(checkInterval)
-                        resolve()
-                    }
-                }, 200)
-                setTimeout(() => { clearInterval(checkInterval); resolve() }, 3000)
-            })
-
-            // 2. 查找所有订阅卡片和对应的重置按钮
-            addLog('步骤 2: 查找可重置的订阅...')
-            const cards = Array.from(document.querySelectorAll('[data-slot="card"]'))
-            let resetCount = 0
-            let skipCount = 0
-
-            for (const card of cards) {
-                // 获取订阅名称
-                const titleEl = card.querySelector('h4, .font-semibold')
-                const subscriptionName = titleEl?.textContent?.trim() || '未知订阅'
-
-                // 查找该卡片内的重置按钮
-                const buttons = Array.from(card.querySelectorAll('button'))
-                const resetBtn = buttons.find(b =>
-                    b.getAttribute('data-slot') === 'tooltip-trigger' &&
-                    (b.textContent?.includes('冷却') || b.textContent?.includes('重置'))
-                ) as HTMLButtonElement | undefined
-
-                if (!resetBtn) continue // 不是订阅卡片
-
-                // 检查是否冷却中（有 disabled 属性）
-                if (resetBtn.disabled || resetBtn.textContent?.includes('冷却')) {
-                    addLog(`跳过 [${subscriptionName}]: 冷却中`)
-                    skipCount++
-                    continue
-                }
-
-                // 3. 点击重置按钮
-                addLog(`重置 [${subscriptionName}]: 点击重置按钮...`)
-                resetBtn.click()
-                await new Promise(r => setTimeout(r, 800))
-
-                // 4. 查找并点击确认按钮
-                const dialogBtns = Array.from(document.querySelectorAll('button'))
-                const confirmBtn = dialogBtns.find(b =>
-                    b.textContent?.trim() === '重置' &&
-                    b.offsetParent !== null &&
-                    !b.textContent?.includes('冷却') &&
-                    !b.textContent?.includes('额度')
-                ) as HTMLButtonElement | undefined
-
-                if (confirmBtn) {
-                    confirmBtn.click()
-                    addLog(`重置 [${subscriptionName}]: ✓ 成功`)
-                    resetCount++
-
-                    // 等待对话框关闭
-                    await waitForDialogClose()
-                    await new Promise(r => setTimeout(r, 1500)) // 等待 API 完成
-                } else {
-                    addLog(`重置 [${subscriptionName}]: ✗ 对话框未出现`)
-                }
-            }
-
-            // 5. 最终刷新
-            addLog('步骤 3: 刷新页面...')
-            if (refreshBtn) {
-                refreshBtn.click()
-            }
-
-            addLog(`========== 重置完成 ==========`)
-            addLog(`✓ 成功: ${resetCount} 个, ○ 跳过: ${skipCount} 个`)
+            // 已在订阅页面，直接执行重置
+            executeResetOperation()
         }
     })
+
+    // 检查是否有 pending reset（跨页面跳转后执行）
+    useEffect(() => {
+        const pendingReset = localStorage.getItem(PENDING_RESET_KEY)
+        if (!pendingReset) return
+
+        // 检查标记是否过期（5分钟内有效）
+        const timestamp = parseInt(pendingReset, 10)
+        if (Date.now() - timestamp > 5 * 60 * 1000) {
+            localStorage.removeItem(PENDING_RESET_KEY)
+            console.log('[88tools] Pending reset 已过期，清除标记')
+            return
+        }
+
+        // 检查是否在订阅页面
+        if (!isSubscriptionPage) {
+            console.log('[88tools] Pending reset 存在但不在订阅页面，等待路由切换...')
+            return
+        }
+
+        // 清除标记并执行重置
+        localStorage.removeItem(PENDING_RESET_KEY)
+        addLog('检测到 pending reset，等待页面加载后执行...')
+
+        // 延迟执行，等待页面渲染完成
+        const timer = setTimeout(() => {
+            executeResetOperation()
+        }, 2000)
+
+        return () => clearTimeout(timer)
+    }, [isSubscriptionPage, executeResetOperation, addLog])
 
     // 更新配置 - 分离保存每个变更的配置项
     const updateConfig = useCallback((updates: Partial<EnhanceConfig>) => {
@@ -308,12 +416,10 @@ export function EnhanceManager() {
                 config={config}
                 onConfigChange={updateConfig}
                 currentPath={currentPath}
-                refreshCountdown={refreshCountdown}
                 nextRefreshTime={nextRefreshTime}
-                resetCountdown={resetCountdown}
                 nextResetTime={nextResetTime}
                 resetStatus={resetStatus}
-                resetLogs={resetLogs}
+                resetLogs={logs}
                 onClearLogs={clearLogs}
             />
             {/* 使用 Portal 将服务状态卡片注入到订阅页 */}

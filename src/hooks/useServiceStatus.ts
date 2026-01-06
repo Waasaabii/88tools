@@ -57,7 +57,7 @@ interface ServiceStatusResult {
 
 const STATUS_API_URL = 'https://www.88code.ai/status-api/api/v1/status'
 
-export function useServiceStatus(): ServiceStatusResult {
+export function useServiceStatus(enabled: boolean = true): ServiceStatusResult {
     const [data, setData] = useState<StatusApiResponse | null>(null)
     const [isLoading, setIsLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -93,14 +93,16 @@ export function useServiceStatus(): ServiceStatusResult {
         }
     }, [])
 
-    // 初始加载
+    // 初始加载和定时刷新 - 只在 enabled 时运行
     useEffect(() => {
+        if (!enabled) return
+
         fetchStatus()
 
         // 每 30 秒自动刷新
         const interval = setInterval(fetchStatus, 30 * 1000)
         return () => clearInterval(interval)
-    }, [fetchStatus])
+    }, [enabled, fetchStatus])
 
     return {
         data,

@@ -8,16 +8,15 @@ interface ScheduledResetOptions {
 
 interface ScheduledResetResult {
     nextResetTime: string | null
-    countdown: number // 距离下次重置的秒数
     status: 'idle' | 'waiting' | 'cooling'
 }
 
 export function useScheduledReset(options: ScheduledResetOptions): ScheduledResetResult {
     const { enabled, times, onReset } = options
     const [nextResetTime, setNextResetTime] = useState<string | null>(null)
-    const [countdown, setCountdown] = useState(0)
     const [status, setStatus] = useState<'idle' | 'waiting' | 'cooling'>('idle')
     const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+    const lastResetRef = useRef<number>(0) // 防止重复触发
 
     // 计算下一个重置时间
     const calculateNextResetTime = useCallback((): Date | null => {
@@ -68,6 +67,13 @@ export function useScheduledReset(options: ScheduledResetOptions): ScheduledRese
 
     // 执行重置
     const executeReset = useCallback(() => {
+        const now = Date.now()
+        // 防止 60 秒内重复触发
+        if (now - lastResetRef.current < 60000) {
+            return
+        }
+        lastResetRef.current = now
+
         if (checkResetButtonAvailable()) {
             onReset()
             setStatus('cooling')
@@ -87,42 +93,52 @@ export function useScheduledReset(options: ScheduledResetOptions): ScheduledRese
                 intervalRef.current = null
             }
             setNextResetTime(null)
-            setCountdown(0)
             setStatus('idle')
             return
         }
 
         setStatus('waiting')
 
-        // 更新倒计时的函数
-        const updateCountdown = () => {
+        // 更新下一次重置时间（不每秒更新 state，只在时间点变化时更新）
+        const updateNextTime = () => {
             const nextTime = calculateNextResetTime()
-            if (!nextTime) {
+            if (nextTime) {
+                const timeStr = nextTime.toLocaleTimeString('zh-CN', {
+                    hour: '2-digit',
+                    minute: '2-digit'
+                })
+                setNextResetTime(prev => prev !== timeStr ? timeStr : prev)
+            } else {
                 setNextResetTime(null)
-                setCountdown(0)
-                return
             }
+        }
+
+        // 检查是否到达重置时间
+        const checkAndExecute = () => {
+            const nextTime = calculateNextResetTime()
+            if (!nextTime) return
 
             const now = new Date()
-            const diffSeconds = Math.max(0, Math.floor((nextTime.getTime() - now.getTime()) / 1000))
+            const diffSeconds = Math.floor((nextTime.getTime() - now.getTime()) / 1000)
 
-            setNextResetTime(nextTime.toLocaleTimeString('zh-CN', {
-                hour: '2-digit',
-                minute: '2-digit'
-            }))
-            setCountdown(diffSeconds)
-
-            // 如果到达重置时间
-            if (diffSeconds === 0) {
+            // 如果到达重置时间（±2秒容差）
+            if (diffSeconds <= 2 && diffSeconds >= -2) {
                 executeReset()
             }
         }
 
         // 初始更新
-        updateCountdown()
+        updateNextTime()
 
-        // 每秒更新倒计时
-        intervalRef.current = setInterval(updateCountdown, 1000)
+        // 每秒检查是否需要执行（但不更新 state）
+        intervalRef.current = setInterval(() => {
+            checkAndExecute()
+            // 每分钟更新一次显示的时间（当跨过整点时）
+            const now = new Date()
+            if (now.getSeconds() === 0) {
+                updateNextTime()
+            }
+        }, 1000)
 
         return () => {
             if (intervalRef.current) {
@@ -133,7 +149,6 @@ export function useScheduledReset(options: ScheduledResetOptions): ScheduledRese
 
     return {
         nextResetTime,
-        countdown,
         status,
     }
 }

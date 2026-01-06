@@ -7,75 +7,73 @@ interface AutoRefreshOptions {
 }
 
 interface AutoRefreshResult {
-    countdown: number
-    nextRefreshTime: string | null
+    nextRefreshTime: number | null // 时间戳，用于子组件计算倒计时
     triggerRefresh: () => void
 }
 
 export function useAutoRefresh(options: AutoRefreshOptions): AutoRefreshResult {
     const { enabled, interval } = options
-    const [countdown, setCountdown] = useState(interval)
-    const [nextRefreshTime, setNextRefreshTime] = useState<string | null>(null)
+    const [nextRefreshTime, setNextRefreshTime] = useState<number | null>(null)
 
-    // 使用 ref 保存 onRefresh 回调，避免 effect 依赖变化
+    // 使用 ref 保存回调和配置
     const onRefreshRef = useRef(options.onRefresh)
     onRefreshRef.current = options.onRefresh
 
-    // 使用 ref 保存 interval，避免 effect 重新执行
     const intervalRef = useRef(interval)
     intervalRef.current = interval
 
-    const calculateNextRefreshTime = useCallback((seconds: number) => {
-        const now = new Date()
-        now.setSeconds(now.getSeconds() + seconds)
-        return now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    }, [])
+    // 用 ref 跟踪目标时间，避免闭包问题
+    const targetTimeRef = useRef<number>(0)
+    const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
     const triggerRefresh = useCallback(() => {
         onRefreshRef.current()
-        setCountdown(intervalRef.current)
-        setNextRefreshTime(calculateNextRefreshTime(intervalRef.current))
-    }, [calculateNextRefreshTime])
+        const newTarget = Date.now() + intervalRef.current * 1000
+        targetTimeRef.current = newTarget
+        setNextRefreshTime(newTarget)
+    }, [])
 
     useEffect(() => {
         if (!enabled) {
-            setCountdown(interval)
             setNextRefreshTime(null)
+            targetTimeRef.current = 0
+            if (timerRef.current) {
+                clearInterval(timerRef.current)
+                timerRef.current = null
+            }
             return
         }
 
         console.log('[88tools] 自动刷新已启用，间隔:', interval, '秒')
 
-        // 设置初始值
-        setCountdown(interval)
-        setNextRefreshTime(calculateNextRefreshTime(interval))
+        // 设置初始目标时间
+        const initialTarget = Date.now() + interval * 1000
+        targetTimeRef.current = initialTarget
+        setNextRefreshTime(initialTarget)
 
-        // 每秒倒计时
-        const timer = setInterval(() => {
-            setCountdown(prev => {
-                const newValue = prev - 1
-                console.log('[88tools] 倒计时:', newValue)
-
-                if (newValue <= 0) {
-                    // 触发刷新
-                    console.log('[88tools] 倒计时结束，触发刷新')
-                    onRefreshRef.current()
-                    setNextRefreshTime(calculateNextRefreshTime(intervalRef.current))
-                    return intervalRef.current
-                }
-
-                return newValue
-            })
+        // 每秒检查是否需要刷新
+        timerRef.current = setInterval(() => {
+            const now = Date.now()
+            if (now >= targetTimeRef.current && targetTimeRef.current > 0) {
+                console.log('[88tools] 触发刷新')
+                onRefreshRef.current()
+                // 设置下一次目标时间
+                const newTarget = Date.now() + intervalRef.current * 1000
+                targetTimeRef.current = newTarget
+                setNextRefreshTime(newTarget)
+            }
         }, 1000)
 
         return () => {
             console.log('[88tools] 清理自动刷新定时器')
-            clearInterval(timer)
+            if (timerRef.current) {
+                clearInterval(timerRef.current)
+                timerRef.current = null
+            }
         }
-    }, [enabled, interval, calculateNextRefreshTime])  // 只依赖 enabled 和 interval
+    }, [enabled, interval])
 
     return {
-        countdown,
         nextRefreshTime,
         triggerRefresh,
     }

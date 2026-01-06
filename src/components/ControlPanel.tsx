@@ -1,35 +1,24 @@
 import type { EnhanceConfig } from './EnhanceManager'
 import { REFRESH_INTERVAL_TEMPLATES } from './EnhanceManager'
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, memo, useMemo } from 'react'
 import logoUrl from '/logo.gif'
 
 interface ControlPanelProps {
     config: EnhanceConfig
     onConfigChange: (updates: Partial<EnhanceConfig>) => void
     currentPath: string
-    refreshCountdown: number
-    nextRefreshTime: string | null
-    resetCountdown: number
+    nextRefreshTime: number | null // 时间戳
     nextResetTime: string | null
     resetStatus: 'idle' | 'waiting' | 'cooling'
     resetLogs: string[]
     onClearLogs: () => void
 }
 
-// 彩虹背景 CSS 变量
-const rainbowStyles = {
-    '--stripes': 'repeating-linear-gradient(100deg, #fff 0%, #fff 7%, transparent 10%, transparent 12%, #fff 16%)',
-    '--stripesDark': 'repeating-linear-gradient(100deg, #000 0%, #000 7%, transparent 10%, transparent 12%, #000 16%)',
-    '--rainbow': 'repeating-linear-gradient(100deg, #60a5fa 10%, #e879f9 16%, #5eead4 22%, #60a5fa 30%)',
-} as React.CSSProperties
-
 export function ControlPanel({
     config,
     onConfigChange,
     currentPath,
-    refreshCountdown,
     nextRefreshTime,
-    resetCountdown,
     nextResetTime,
     resetStatus,
     resetLogs,
@@ -38,415 +27,415 @@ export function ControlPanel({
     const isMinimized = config.panelMinimized
     const panelRef = useRef<HTMLDivElement>(null)
 
-    // 拖拽状态
+    // Position & Size - 只用于初始化和最终保存
     const [position, setPosition] = useState<{ x: number; y: number }>(() => {
-        // 从配置恢复位置，默认右下角
-        return config.panelPosition || { x: window.innerWidth - 340, y: window.innerHeight - 400 }
+        return config.panelPosition || { x: window.innerWidth - 360, y: window.innerHeight - 500 }
     })
-    const [isDragging, setIsDragging] = useState(false)
-    const dragStart = useRef<{ x: number; y: number; posX: number; posY: number } | null>(null)
+    const [size, setSize] = useState<{ width: number; height: number }>(() => {
+        return config.panelSize || { width: 320, height: 420 }
+    })
 
-    // 拖拽处理
+    // 拖拽状态 ref（不触发重渲染）
+    const dragState = useRef<{
+        isDragging: boolean
+        isResizing: boolean
+        startX: number
+        startY: number
+        startPosX: number
+        startPosY: number
+        startWidth: number
+        startHeight: number
+    }>({
+        isDragging: false,
+        isResizing: false,
+        startX: 0,
+        startY: 0,
+        startPosX: 0,
+        startPosY: 0,
+        startWidth: 0,
+        startHeight: 0,
+    })
+
+    // --- Drag Logic (直接操作 DOM) ---
     const handleMouseDown = useCallback((e: React.MouseEvent) => {
+        const target = e.target as HTMLElement
+        if (target.closest('button') || target.closest('input') || target.closest('select') || target.closest('.resize-handle')) return
+        if (!panelRef.current) return
+
         e.preventDefault()
-        setIsDragging(true)
-        dragStart.current = {
-            x: e.clientX,
-            y: e.clientY,
-            posX: position.x,
-            posY: position.y
+        const rect = panelRef.current.getBoundingClientRect()
+        dragState.current = {
+            ...dragState.current,
+            isDragging: true,
+            startX: e.clientX,
+            startY: e.clientY,
+            startPosX: rect.left,
+            startPosY: rect.top,
         }
-    }, [position])
+        panelRef.current.style.transition = 'none'
+        panelRef.current.style.cursor = 'grabbing'
+    }, [])
+
+    const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
+        if (!panelRef.current) return
+        e.preventDefault()
+        e.stopPropagation()
+
+        dragState.current = {
+            ...dragState.current,
+            isResizing: true,
+            startX: e.clientX,
+            startY: e.clientY,
+            startWidth: panelRef.current.offsetWidth,
+            startHeight: panelRef.current.offsetHeight,
+        }
+        panelRef.current.style.transition = 'none'
+    }, [])
 
     useEffect(() => {
-        if (!isDragging) return
-
         const handleMouseMove = (e: MouseEvent) => {
-            if (!dragStart.current) return
-            const dx = e.clientX - dragStart.current.x
-            const dy = e.clientY - dragStart.current.y
-            const newX = Math.max(0, Math.min(window.innerWidth - 320, dragStart.current.posX + dx))
-            const newY = Math.max(0, Math.min(window.innerHeight - 200, dragStart.current.posY + dy))
-            setPosition({ x: newX, y: newY })
+            const state = dragState.current
+            if (!panelRef.current) return
+
+            if (state.isDragging) {
+                const dx = e.clientX - state.startX
+                const dy = e.clientY - state.startY
+                const panelWidth = panelRef.current.offsetWidth
+                const panelHeight = panelRef.current.offsetHeight
+                // 边界限制：面板完全在屏幕内
+                const newX = Math.max(0, Math.min(window.innerWidth - panelWidth, state.startPosX + dx))
+                const newY = Math.max(0, Math.min(window.innerHeight - panelHeight, state.startPosY + dy))
+                panelRef.current.style.left = `${newX}px`
+                panelRef.current.style.top = `${newY}px`
+            } else if (state.isResizing) {
+                const dx = e.clientX - state.startX
+                const dy = e.clientY - state.startY
+                const newWidth = Math.max(300, Math.min(600, state.startWidth + dx))
+                const newHeight = Math.max(300, Math.min(800, state.startHeight + dy))
+                panelRef.current.style.width = `${newWidth}px`
+                panelRef.current.style.height = `${newHeight}px`
+            }
         }
 
         const handleMouseUp = () => {
-            setIsDragging(false)
-            dragStart.current = null
-            // 保存位置到配置
-            onConfigChange({ panelPosition: position })
+            const state = dragState.current
+            if (!panelRef.current) return
+
+            if (state.isDragging) {
+                const rect = panelRef.current.getBoundingClientRect()
+                const newPos = { x: rect.left, y: rect.top }
+                setPosition(newPos)
+                onConfigChange({ panelPosition: newPos })
+                panelRef.current.style.cursor = 'grab'
+            }
+
+            if (state.isResizing) {
+                const newSize = {
+                    width: panelRef.current.offsetWidth,
+                    height: panelRef.current.offsetHeight,
+                }
+                setSize(newSize)
+                onConfigChange({ panelSize: newSize })
+            }
+
+            dragState.current.isDragging = false
+            dragState.current.isResizing = false
+            if (panelRef.current) {
+                panelRef.current.style.transition = ''
+            }
         }
 
-        document.addEventListener('mousemove', handleMouseMove)
-        document.addEventListener('mouseup', handleMouseUp)
+        window.addEventListener('mousemove', handleMouseMove)
+        window.addEventListener('mouseup', handleMouseUp)
 
         return () => {
-            document.removeEventListener('mousemove', handleMouseMove)
-            document.removeEventListener('mouseup', handleMouseUp)
+            window.removeEventListener('mousemove', handleMouseMove)
+            window.removeEventListener('mouseup', handleMouseUp)
         }
-    }, [isDragging, position, onConfigChange])
+    }, [onConfigChange])
 
-    // 点击面板外部关闭
+    // Click outside behavior
     useEffect(() => {
         const handleClickOutside = (e: MouseEvent) => {
+            if (isMinimized) return
             if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
-                // 检查是否点击了 header icon
                 const headerIcon = document.getElementById('enhance-header-icon')
                 if (headerIcon && headerIcon.contains(e.target as Node)) return
                 onConfigChange({ panelMinimized: true })
             }
         }
-
-        if (!isMinimized) {
-            // 延迟添加事件监听，避免立即触发
-            const timer = setTimeout(() => {
-                document.addEventListener('mousedown', handleClickOutside)
-            }, 100)
-            return () => {
-                clearTimeout(timer)
-                document.removeEventListener('mousedown', handleClickOutside)
-            }
-        }
+        document.addEventListener('mousedown', handleClickOutside)
+        return () => document.removeEventListener('mousedown', handleClickOutside)
     }, [isMinimized, onConfigChange])
 
-    const toggleMinimize = () => {
-        onConfigChange({ panelMinimized: !isMinimized })
-    }
-
-    // Tab 切换状态
-    const [activeTab, setActiveTab] = useState<'settings' | 'logs'>('settings')
-
-    // 隐藏时不渲染
-    if (isMinimized) {
-        return null
-    }
+    if (isMinimized) return null
 
     return (
         <div
             ref={panelRef}
+            className={`
+                fixed flex flex-col overflow-hidden font-sans
+                bg-card border border-slate-300 dark:border-slate-600 enhance-panel-border shadow-2xl rounded-xl
+                animate-in fade-in zoom-in-95 will-change-transform
+            `}
             style={{
-                position: 'fixed',
                 left: `${position.x}px`,
                 top: `${position.y}px`,
-                zIndex: 99999,
-                minWidth: '320px',
-                maxWidth: '360px',
-                fontFamily: 'system-ui, -apple-system, sans-serif',
-                background: 'var(--card)',
-                color: 'var(--foreground)',
-                border: '1px solid var(--border)',
-                borderRadius: '12px',
-                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, .25)',
-                backdropFilter: 'blur(10px)',
-                overflow: 'hidden',
+                width: `${size.width}px`,
+                height: `${size.height}px`,
+                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
+                zIndex: 2147483647,
             }}
         >
-            {/* 彩虹背景效果 */}
-            <div
-                className="ray"
-                style={{
-                    ...rainbowStyles,
-                    position: 'absolute',
-                    inset: 0,
-                    pointerEvents: 'none',
-                    opacity: 0.3,
-                    backgroundImage: 'var(--stripesDark), var(--rainbow)',
-                    backgroundSize: '300%, 200%',
-                    backgroundPosition: '50% 50%, 50% 50%',
-                    filter: 'opacity(50%) saturate(200%)',
-                    maskImage: 'radial-gradient(at 100% 0%, black 40%, transparent 70%)',
-                    WebkitMaskImage: 'radial-gradient(at 100% 0%, black 40%, transparent 70%)',
-                    animation: 'ray-animate 90s linear infinite',
-                }}
-            />
-
-            {/* Header - 可拖拽 */}
+            {/* Header */}
             <div
                 onMouseDown={handleMouseDown}
-                style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '12px 16px',
-                    borderBottom: '1px solid var(--border)',
-                    position: 'relative',
-                    zIndex: 1,
-                    cursor: isDragging ? 'grabbing' : 'grab',
-                    userSelect: 'none',
-                }}
+                style={{ cursor: 'grab' }}
+                className="flex items-center justify-between h-10 px-4 border-b border-slate-200 dark:border-slate-700 enhance-header-border bg-muted/40 select-none"
             >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', fontWeight: 600 }}>
-                    <img src={logoUrl} alt="88tools" style={{ width: '24px', height: '24px', borderRadius: '6px' }} />
-                    88code 增强
+                <div className="flex items-center gap-2.5">
+                    <img src={logoUrl} alt="" className="size-5 rounded-sm shadow-sm" />
+                    <span className="text-sm font-semibold text-foreground tracking-tight">88code 增强</span>
                 </div>
                 <button
-                    onClick={(e) => { e.stopPropagation(); toggleMinimize() }}
-                    title="收起"
-                    style={{
-                        padding: '4px',
-                        borderRadius: '4px',
-                        background: 'transparent',
-                        border: 'none',
-                        color: 'var(--muted-foreground)',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                    }}
+                    onClick={() => onConfigChange({ panelMinimized: true })}
+                    className="p-1.5 -mr-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors"
+                    title="最小化"
                 >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <line x1="18" y1="6" x2="6" y2="18"></line>
-                        <line x1="6" y1="6" x2="18" y2="18"></line>
-                    </svg>
-                </button>
-            </div>
-
-            {/* Tab 切换器 */}
-            <div style={{
-                display: 'flex',
-                borderBottom: '1px solid var(--border)',
-                padding: '0 16px',
-                position: 'relative',
-                zIndex: 1,
-            }}>
-                <button
-                    onClick={() => setActiveTab('settings')}
-                    style={{
-                        flex: 1,
-                        padding: '10px 0',
-                        background: 'transparent',
-                        border: 'none',
-                        fontSize: '13px',
-                        fontWeight: 500,
-                        color: activeTab === 'settings' ? 'var(--foreground)' : 'var(--muted-foreground)',
-                        borderBottom: activeTab === 'settings' ? '2px solid var(--primary)' : '2px solid transparent',
-                        cursor: 'pointer',
-                        transition: 'color 0.15s',
-                    }}
-                >
-                    ⚙️ 设置
-                </button>
-                <button
-                    onClick={() => setActiveTab('logs')}
-                    style={{
-                        flex: 1,
-                        padding: '10px 0',
-                        background: 'transparent',
-                        border: 'none',
-                        fontSize: '13px',
-                        fontWeight: 500,
-                        color: activeTab === 'logs' ? 'var(--foreground)' : 'var(--muted-foreground)',
-                        borderBottom: activeTab === 'logs' ? '2px solid var(--primary)' : '2px solid transparent',
-                        cursor: 'pointer',
-                        transition: 'color 0.15s',
-                    }}
-                >
-                    📋 日志 {resetLogs.length > 0 && `(${resetLogs.length})`}
+                    <IconX className="size-4" />
                 </button>
             </div>
 
             {/* Content */}
-            <div style={{ position: 'relative', zIndex: 1, padding: '16px' }}>
+            <div className="flex-1 overflow-hidden relative flex flex-col bg-card">
+                <ControlPanelContent
+                    config={config}
+                    onConfigChange={onConfigChange}
+                    currentPath={currentPath}
+                    nextRefreshTime={nextRefreshTime}
+                    nextResetTime={nextResetTime}
+                    resetStatus={resetStatus}
+                    resetLogs={resetLogs}
+                    onClearLogs={onClearLogs}
+                />
+            </div>
+
+            {/* Resize Handle */}
+            <div
+                onMouseDown={handleResizeMouseDown}
+                className="resize-handle absolute bottom-0 right-0 p-1 cursor-nwse-resize text-muted-foreground/40 hover:text-primary transition-colors z-50"
+            >
+                <svg viewBox="0 0 6 6" className="size-2.5 fill-current">
+                    <path d="M6 6L6 2L2 6Z" />
+                </svg>
+            </div>
+
+            {/* Injected Styles - Fallback for missing Tailwind classes */}
+            <style>{`
+                .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+                .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+                .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 4px; }
+                .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.2); }
+                
+                /* Ensure visibility regardless of host CSS */
+                .enhance-panel-border { border-color: #cbd5e1 !important; } /* slate-300 */
+                .dark .enhance-panel-border { border-color: #475569 !important; } /* slate-600 */
+                
+                .enhance-header-border { border-bottom-color: #e2e8f0 !important; } /* slate-200 */
+                .dark .enhance-header-border { border-bottom-color: #334155 !important; } /* slate-700 */
+
+                /* Switch Styles */
+                .enhance-switch {
+                    transition: background-color 0.2s ease-in-out;
+                }
+                .enhance-switch-thumb {
+                    transition: transform 0.2s ease-in-out;
+                    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+                }
+                
+                .enhance-tab-slider { 
+                    background-color: #ffffff !important; 
+                    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
+                }
+                .dark .enhance-tab-slider { 
+                    background-color: #334155 !important; /* slate-700 */
+                    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2) !important;
+                }
+                
+                .enhance-tab-text-active { color: #0f172a !important; font-weight: 600 !important; } /* slate-900 */
+                .dark .enhance-tab-text-active { color: #f8fafc !important; } /* slate-50 */
+                
+                .enhance-tab-text-inactive { color: #64748b !important; } /* slate-500 */
+                .dark .enhance-tab-text-inactive { color: #94a3b8 !important; } /* slate-400 */
+                .enhance-tab-text-inactive:hover { color: #475569 !important; } /* slate-600 */
+                .dark .enhance-tab-text-inactive:hover { color: #cbd5e1 !important; } /* slate-300 */
+                
+                .enhance-switch-unchecked { background-color: #94a3b8 !important; } /* slate-400 */
+                .dark .enhance-switch-unchecked { background-color: #475569 !important; } /* slate-600 */
+                
+                /* Use site's primary color variable */
+                .enhance-switch-checked { 
+                    background-color: var(--primary, #0f172a) !important; 
+                } 
+                .dark .enhance-switch-checked {
+                    background-color: var(--primary, #f8fafc) !important;
+                }
+            `}</style>
+        </div>
+    )
+}
+
+const ControlPanelContent = memo(function ControlPanelContent(props: ControlPanelProps) {
+    // ... keep existing code ...
+
+    const [activeTab, setActiveTab] = useState<'settings' | 'logs'>('settings')
+
+    return (
+        <div className="flex flex-col h-full">
+            {/* Tab Switcher - Capsule Style (Inline Styles) */}
+            <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border, #e2e8f0)', userSelect: 'none' }}>
+                <div
+                    style={{
+                        position: 'relative',
+                        display: 'flex',
+                        alignItems: 'center',
+                        height: '36px',
+                        padding: '4px',
+                        borderRadius: '9999px',
+                        backgroundColor: '#f1f5f9',
+                        overflow: 'hidden',
+                    }}
+                >
+                    {/* Sliding Capsule Background */}
+                    <div
+                        style={{
+                            position: 'absolute',
+                            top: '4px',
+                            bottom: '4px',
+                            left: '4px',
+                            width: 'calc(50% - 4px)',
+                            borderRadius: '9999px',
+                            backgroundColor: '#ffffff',
+                            boxShadow: '0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06)',
+                            transition: 'transform 200ms ease-in-out',
+                            transform: activeTab === 'logs' ? 'translateX(calc(100% + 0px))' : 'translateX(0)',
+                        }}
+                    />
+
+                    <TabButton
+                        active={activeTab === 'settings'}
+                        onClick={() => setActiveTab('settings')}
+                        icon={<IconSettings style={{ width: '14px', height: '14px' }} />}
+                        label="设置"
+                    />
+                    <TabButton
+                        active={activeTab === 'logs'}
+                        onClick={() => setActiveTab('logs')}
+                        icon={<IconFileText style={{ width: '14px', height: '14px' }} />}
+                        label="日志"
+                        badge={props.resetLogs.length > 0 ? props.resetLogs.length : undefined}
+                    />
+                </div>
+            </div>
+
+            {/* Tab Panels */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar">
                 {activeTab === 'settings' ? (
-                    <>
-                        {/* 当前页面 */}
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', fontSize: '14px' }}>
-                            <span style={{ color: 'var(--muted-foreground)' }}>当前页面</span>
-                            <span style={{ fontSize: '12px', fontFamily: 'monospace', color: 'var(--muted-foreground)', opacity: 0.7 }}>{getPageName(currentPath)}</span>
-                        </div>
+                    <SettingsPanel {...props} />
+                ) : (
+                    <LogsPanel logs={props.resetLogs} onClear={props.onClearLogs} />
+                )}
+            </div>
+        </div>
+    )
+})
 
-                        {/* 服务状态开关 */}
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-                            <span style={{ fontSize: '14px', color: 'var(--muted-foreground)' }}>服务状态显示</span>
-                            <Switch
-                                checked={config.showServiceStatus ?? true}
-                                onChange={() => onConfigChange({ showServiceStatus: !(config.showServiceStatus ?? true) })}
-                            />
-                        </div>
+function SettingsPanel({
+    config, onConfigChange, currentPath,
+    nextRefreshTime,
+    resetStatus, nextResetTime
+}: ControlPanelProps) {
+    return (
+        <div className="divide-y divide-border/40">
+            {/* Section: Status */}
+            <div className="py-3">
+                <div className="px-4 pb-1.5">
+                    <div className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">当前页面</div>
+                </div>
+                <div className="px-4 py-1.5 flex items-center justify-between">
+                    <span className="text-sm text-foreground">{getPageName(currentPath)}</span>
+                    <span className="text-xs text-muted-foreground font-mono bg-muted px-1.5 py-0.5 rounded border border-border/50">{currentPath || '/'}</span>
+                </div>
+            </div>
 
-                        {/* 自动刷新 */}
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-                            <div>
-                                <span style={{ fontSize: '14px', color: 'var(--muted-foreground)' }}>自动刷新</span>
-                                {config.autoRefreshEnabled && (
-                                    <div style={{ fontSize: '12px', marginTop: '2px', color: refreshCountdown > 0 ? '#10b981' : 'var(--muted-foreground)', opacity: 0.7 }}>
-                                        {refreshCountdown > 0
-                                            ? `${refreshCountdown}秒后刷新`
-                                            : nextRefreshTime ? `下次: ${nextRefreshTime}` : '等待中...'}
-                                    </div>
-                                )}
-                            </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {/* Section: Automation */}
+            <div className="py-3">
+                <div className="px-4 pb-1.5">
+                    <div className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">功能设置</div>
+                </div>
+
+                <SettingRow
+                    label="状态指示器"
+                    description="在页面左上角显示服务状态悬浮球"
+                    control={
+                        <Switch
+                            checked={config.showServiceStatus ?? true}
+                            onChange={(c) => onConfigChange({ showServiceStatus: c })}
+                        />
+                    }
+                />
+
+                <SettingRow
+                    label="自动刷新"
+                    description={
+                        config.autoRefreshEnabled ? (
+                            <RefreshCountdownDisplay nextRefreshTime={nextRefreshTime} />
+                        ) : '未启用'
+                    }
+                    control={
+                        <div className="flex items-center gap-2">
+                            {config.autoRefreshEnabled && (
                                 <select
+                                    className="h-6 text-xs bg-muted border border-border/50 rounded px-1.5 focus:ring-1 focus:ring-primary/20 cursor-pointer outline-none transition-all"
                                     value={config.autoRefreshInterval}
                                     onChange={(e) => onConfigChange({ autoRefreshInterval: Number(e.target.value) })}
-                                    style={{
-                                        background: 'var(--muted)',
-                                        border: '1px solid var(--border)',
-                                        borderRadius: '6px',
-                                        padding: '4px 8px',
-                                        fontSize: '12px',
-                                        color: 'var(--foreground)',
-                                        cursor: 'pointer',
-                                        outline: 'none',
-                                    }}
                                 >
                                     {REFRESH_INTERVAL_TEMPLATES.map(t => (
                                         <option key={t.value} value={t.value}>{t.label}</option>
                                     ))}
                                 </select>
-                                <Switch
-                                    checked={config.autoRefreshEnabled}
-                                    onChange={() => onConfigChange({ autoRefreshEnabled: !config.autoRefreshEnabled })}
-                                />
-                            </div>
-                        </div>
-
-                        {/* 定时重置 */}
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: config.scheduledResetEnabled ? '8px' : '0' }}>
-                            <div>
-                                <span style={{ fontSize: '14px', color: 'var(--muted-foreground)' }}>定时重置</span>
-                                {config.scheduledResetEnabled && (
-                                    <div style={{ fontSize: '12px', marginTop: '2px', color: resetStatus === 'waiting' ? '#10b981' : 'var(--muted-foreground)', opacity: 0.7 }}>
-                                        {resetStatus === 'cooling' && '冷却中'}
-                                        {resetStatus === 'waiting' && nextResetTime && `下次: ${nextResetTime}`}
-                                        {resetCountdown > 0 && ` (${Math.floor(resetCountdown / 60)}分${resetCountdown % 60}秒)`}
-                                    </div>
-                                )}
-                            </div>
+                            )}
                             <Switch
-                                checked={config.scheduledResetEnabled}
-                                onChange={() => onConfigChange({ scheduledResetEnabled: !config.scheduledResetEnabled })}
+                                checked={config.autoRefreshEnabled}
+                                onChange={(c) => onConfigChange({ autoRefreshEnabled: c })}
                             />
                         </div>
-
-                        {/* 定时重置时间配置 - 支持多个时间 */}
-                        {config.scheduledResetEnabled && (
-                            <ScheduleTimeConfig
-                                times={config.scheduledResetTimes}
-                                onChange={(times) => onConfigChange({ scheduledResetTimes: times })}
+                    }
+                />
+                <SettingRow
+                    label="定时重置"
+                    description={
+                        config.scheduledResetEnabled ? (
+                            <ResetCountdownDisplay
+                                nextResetTime={nextResetTime}
+                                resetStatus={resetStatus}
                             />
-                        )}
+                        ) : '未启用'
+                    }
+                    control={
+                        <Switch
+                            checked={config.scheduledResetEnabled}
+                            onChange={(c) => onConfigChange({ scheduledResetEnabled: c })}
+                        />
+                    }
+                />
 
-                        {/* 重置日志 - 可折叠 */}
-                        {config.scheduledResetEnabled && resetLogs.length > 0 && (
-                            <div style={{
-                                marginTop: '12px',
-                                background: 'rgba(0,0,0,0.2)',
-                                borderRadius: '8px',
-                                overflow: 'hidden',
-                            }}>
-                                <div style={{
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'space-between',
-                                    padding: '8px 12px',
-                                    borderBottom: '1px solid rgba(255,255,255,0.1)',
-                                }}>
-                                    <span style={{ fontSize: '12px', color: 'var(--muted-foreground)' }}>
-                                        重置日志 ({resetLogs.length})
-                                    </span>
-                                    <button
-                                        onClick={onClearLogs}
-                                        style={{
-                                            fontSize: '11px',
-                                            padding: '2px 8px',
-                                            background: 'transparent',
-                                            border: '1px solid rgba(255,255,255,0.2)',
-                                            borderRadius: '4px',
-                                            color: 'var(--muted-foreground)',
-                                            cursor: 'pointer',
-                                        }}
-                                    >
-                                        清除
-                                    </button>
-                                </div>
-                                <div style={{
-                                    maxHeight: '120px',
-                                    overflowY: 'auto',
-                                    padding: '8px 12px',
-                                    fontSize: '11px',
-                                    fontFamily: 'monospace',
-                                    lineHeight: 1.6,
-                                    color: 'var(--muted-foreground)',
-                                }}>
-                                    {resetLogs.map((log, i) => (
-                                        <div key={i} style={{
-                                            opacity: log.includes('成功') || log.includes('✓') ? 1 : 0.8,
-                                            color: log.includes('成功') || log.includes('✓') ? '#10b981' :
-                                                log.includes('跳过') || log.includes('○') ? '#f59e0b' :
-                                                    log.includes('✗') ? '#ef4444' : 'inherit',
-                                        }}>
-                                            {log}
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-                    </>
-                ) : (
-                    /* 日志 Tab */
-                    <div>
-                        {resetLogs.length === 0 ? (
-                            <div style={{
-                                textAlign: 'center',
-                                padding: '32px 16px',
-                                color: 'var(--muted-foreground)',
-                                fontSize: '13px',
-                            }}>
-                                暂无日志
-                                <div style={{ fontSize: '11px', marginTop: '8px', opacity: 0.6 }}>
-                                    开启定时重置后，重置记录将显示在这里
-                                </div>
-                            </div>
-                        ) : (
-                            <>
-                                <div style={{
-                                    display: 'flex',
-                                    justifyContent: 'space-between',
-                                    alignItems: 'center',
-                                    marginBottom: '12px',
-                                }}>
-                                    <span style={{ fontSize: '12px', color: 'var(--muted-foreground)' }}>
-                                        共 {resetLogs.length} 条记录
-                                    </span>
-                                    <button
-                                        onClick={onClearLogs}
-                                        style={{
-                                            fontSize: '11px',
-                                            padding: '4px 12px',
-                                            background: 'transparent',
-                                            border: '1px solid var(--border)',
-                                            borderRadius: '6px',
-                                            color: 'var(--muted-foreground)',
-                                            cursor: 'pointer',
-                                        }}
-                                    >
-                                        清除日志
-                                    </button>
-                                </div>
-                                <div style={{
-                                    maxHeight: '200px',
-                                    overflowY: 'auto',
-                                    background: 'rgba(0,0,0,0.2)',
-                                    borderRadius: '8px',
-                                    padding: '12px',
-                                    fontSize: '11px',
-                                    fontFamily: 'monospace',
-                                    lineHeight: 1.8,
-                                }}>
-                                    {resetLogs.map((log, i) => (
-                                        <div key={i} style={{
-                                            color: log.includes('成功') || log.includes('✓') ? '#10b981' :
-                                                log.includes('跳过') || log.includes('○') ? '#f59e0b' :
-                                                    log.includes('✗') ? '#ef4444' : 'var(--muted-foreground)',
-                                        }}>
-                                            {log}
-                                        </div>
-                                    ))}
-                                </div>
-                            </>
-                        )}
+                {config.scheduledResetEnabled && (
+                    <div className="px-4 py-3 mx-4 mt-2">
+                        <ScheduleTimeConfig
+                            times={config.scheduledResetTimes}
+                            onChange={(times) => onConfigChange({ scheduledResetTimes: times })}
+                        />
                     </div>
                 )}
             </div>
@@ -454,138 +443,682 @@ export function ControlPanel({
     )
 }
 
-// 开关组件
-function Switch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
+function LogsPanel({ logs, onClear }: { logs: string[], onClear: () => void }) {
+    const listRef = useRef<HTMLDivElement>(null)
+
+    // 合并连续相同的日志（去掉时间戳后比较）
+    const mergedLogs = useMemo(() => {
+        const result: { log: string; count: number; firstIndex: number }[] = []
+
+        for (let i = 0; i < logs.length; i++) {
+            const log = logs[i]
+            // 提取时间戳后的内容用于比较
+            const content = log.replace(/^\[\d{2}:\d{2}:\d{2}\]\s*/, '')
+            const prev = result[result.length - 1]
+
+            // 只合并可合并的日志类型（刷新类、跳过类等重复性高的）
+            const isMergeable = content.includes('刷新') ||
+                               content.includes('跳过') ||
+                               content.includes('冷却')
+
+            if (prev && isMergeable) {
+                const prevContent = prev.log.replace(/^\[\d{2}:\d{2}:\d{2}\]\s*/, '')
+                if (prevContent === content) {
+                    prev.count++
+                    continue
+                }
+            }
+
+            result.push({ log, count: 1, firstIndex: i })
+        }
+
+        return result
+    }, [logs])
+
+    // 新日志时自动滚动到底部
+    useEffect(() => {
+        if (listRef.current) {
+            listRef.current.scrollTop = listRef.current.scrollHeight
+        }
+    }, [logs.length])
+
+    if (logs.length === 0) {
+        return (
+            <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                height: '100%',
+                minHeight: '240px',
+                gap: '12px',
+                color: 'rgba(100, 116, 139, 0.5)',
+            }}>
+                <IconFileText style={{ width: '32px', height: '32px', opacity: 0.2 }} />
+                <p style={{ fontSize: '12px', margin: 0 }}>暂无操作日志</p>
+            </div>
+        )
+    }
+
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+            {/* 头部 */}
+            <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '10px 16px',
+                borderBottom: '1px solid rgba(226, 232, 240, 0.4)',
+                background: 'rgba(248, 250, 252, 0.5)',
+                position: 'sticky',
+                top: 0,
+                zIndex: 10,
+                backdropFilter: 'blur(8px)',
+            }}>
+                <span style={{ fontSize: '11px', fontWeight: 500, color: '#64748b' }}>
+                    共 {logs.length} 条{mergedLogs.length < logs.length && ` (显示 ${mergedLogs.length})`}
+                </span>
+                <button
+                    onClick={onClear}
+                    style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        fontSize: '10px',
+                        padding: '4px 8px',
+                        borderRadius: '4px',
+                        border: '1px solid #e2e8f0',
+                        background: '#fff',
+                        color: '#64748b',
+                        cursor: 'pointer',
+                        transition: 'all 150ms',
+                    }}
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.color = '#ef4444'
+                        e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 0.3)'
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.color = '#64748b'
+                        e.currentTarget.style.borderColor = '#e2e8f0'
+                    }}
+                >
+                    <IconTrash style={{ width: '12px', height: '12px' }} />
+                    清空
+                </button>
+            </div>
+
+            {/* 日志列表 */}
+            <div
+                ref={listRef}
+                style={{
+                    flex: 1,
+                    overflowY: 'auto',
+                    padding: '8px',
+                }}
+            >
+                {mergedLogs.map(({ log, count, firstIndex }) => {
+                    const { color, bgColor, Icon } = getLogStyle(log)
+                    return (
+                        <div
+                            key={firstIndex}
+                            style={{
+                                display: 'flex',
+                                alignItems: 'flex-start',
+                                gap: '8px',
+                                padding: '6px 10px',
+                                marginBottom: '2px',
+                                borderRadius: '6px',
+                                fontSize: '11px',
+                                fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+                                lineHeight: 1.5,
+                                background: bgColor,
+                                transition: 'background 150ms',
+                            }}
+                        >
+                            {/* 图标 */}
+                            <span style={{
+                                flexShrink: 0,
+                                width: '14px',
+                                height: '14px',
+                                marginTop: '1px',
+                            }}>
+                                <Icon style={{ width: '14px', height: '14px', color }} />
+                            </span>
+                            {/* 日志内容 */}
+                            <span style={{
+                                flex: 1,
+                                color: color,
+                                wordBreak: 'break-all',
+                            }}>
+                                {log}
+                            </span>
+                            {/* 合并计数 */}
+                            {count > 1 && (
+                                <span style={{
+                                    flexShrink: 0,
+                                    fontSize: '9px',
+                                    fontWeight: 600,
+                                    padding: '2px 6px',
+                                    borderRadius: '9999px',
+                                    background: color,
+                                    color: '#fff',
+                                    marginLeft: '4px',
+                                }}>
+                                    ×{count}
+                                </span>
+                            )}
+                        </div>
+                    )
+                })}
+            </div>
+        </div>
+    )
+}
+
+// --- Components ---
+
+function TabButton({ active, onClick, icon, label, badge }: { active: boolean, onClick: () => void, icon: React.ReactNode, label: string, badge?: number }) {
     return (
         <button
-            onClick={onChange}
+            onClick={onClick}
             style={{
+                flex: 1,
                 position: 'relative',
-                width: '36px',
-                height: '20px',
-                borderRadius: '10px',
-                background: checked ? '#10b981' : 'var(--muted)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px',
+                height: '28px',
+                fontSize: '12px',
+                fontWeight: 500,
+                borderRadius: '9999px',
                 border: 'none',
+                background: 'transparent',
                 cursor: 'pointer',
-                transition: 'background 0.2s',
-                flexShrink: 0,
+                zIndex: 10,
+                transition: 'color 200ms ease-in-out',
+                color: active ? '#0f172a' : '#64748b',
             }}
         >
+            {icon}
+            {label}
+            {badge !== undefined && (
+                <span
+                    style={{
+                        marginLeft: '2px',
+                        fontSize: '9px',
+                        fontWeight: 600,
+                        padding: '0 6px',
+                        borderRadius: '9999px',
+                        height: '16px',
+                        minWidth: '16px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        backgroundColor: active ? 'rgba(15,23,42,0.1)' : 'rgba(100,116,139,0.1)',
+                        color: active ? '#334155' : '#64748b',
+                    }}
+                >
+                    {badge > 99 ? '99+' : badge}
+                </span>
+            )}
+        </button>
+    )
+}
+
+function SettingRow({ label, description, control }: { label: string, description?: React.ReactNode, control: React.ReactNode }) {
+    return (
+        <div className="flex items-center justify-between px-4 py-3 hover:bg-muted/20 transition-colors group">
+            <div className="flex-1 min-w-0 pr-4">
+                <div className="text-sm font-medium text-foreground">{label}</div>
+                {description && <div className="text-[11px] text-muted-foreground mt-0.5 leading-tight">{description}</div>}
+            </div>
+            <div className="flex-none">{control}</div>
+        </div>
+    )
+}
+
+// 独立倒计时组件 - 只有这个组件每秒重渲染，不影响整个面板
+const ResetCountdownDisplay = memo(function ResetCountdownDisplay({
+    nextResetTime,
+    resetStatus,
+}: {
+    nextResetTime: string | null
+    resetStatus: 'idle' | 'waiting' | 'cooling'
+}) {
+    const [countdown, setCountdown] = useState('')
+
+    useEffect(() => {
+        if (resetStatus !== 'waiting' || !nextResetTime) {
+            setCountdown('')
+            return
+        }
+
+        const calculateCountdown = () => {
+            const now = new Date()
+            const [hours, minutes] = nextResetTime.split(':').map(Number)
+
+            const target = new Date()
+            target.setHours(hours, minutes, 0, 0)
+
+            // 如果目标时间已过，设为明天
+            if (target <= now) {
+                target.setDate(target.getDate() + 1)
+            }
+
+            const diffMs = target.getTime() - now.getTime()
+            const diffSeconds = Math.floor(diffMs / 1000)
+
+            if (diffSeconds <= 0) {
+                return '即将执行...'
+            }
+
+            const h = Math.floor(diffSeconds / 3600)
+            const m = Math.floor((diffSeconds % 3600) / 60)
+            const s = diffSeconds % 60
+
+            if (h > 0) {
+                return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+            }
+            return `${m}:${s.toString().padStart(2, '0')}`
+        }
+
+        setCountdown(calculateCountdown())
+        const interval = setInterval(() => {
+            setCountdown(calculateCountdown())
+        }, 1000)
+
+        return () => clearInterval(interval)
+    }, [nextResetTime, resetStatus])
+
+    if (resetStatus === 'cooling') {
+        return <span style={{ color: '#d97706', fontWeight: 500 }}>冷却中</span>
+    }
+
+    if (resetStatus === 'waiting' && nextResetTime) {
+        return (
+            <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ color: '#059669', fontFamily: 'monospace', fontWeight: 600 }}>{countdown}</span>
+                <span style={{ color: '#64748b' }}>后执行</span>
+            </span>
+        )
+    }
+
+    return <span style={{ color: '#64748b' }}>等待中...</span>
+})
+
+// 自动刷新倒计时组件
+const RefreshCountdownDisplay = memo(function RefreshCountdownDisplay({
+    nextRefreshTime,
+}: {
+    nextRefreshTime: number | null // 时间戳
+}) {
+    const [countdown, setCountdown] = useState('')
+
+    useEffect(() => {
+        if (!nextRefreshTime) {
+            setCountdown('')
+            return
+        }
+
+        const calculateCountdown = () => {
+            const now = Date.now()
+            const diffSeconds = Math.max(0, Math.floor((nextRefreshTime - now) / 1000))
+
+            if (diffSeconds <= 0) {
+                return '刷新中...'
+            }
+
+            return `${diffSeconds}秒`
+        }
+
+        setCountdown(calculateCountdown())
+        const interval = setInterval(() => {
+            setCountdown(calculateCountdown())
+        }, 1000)
+
+        return () => clearInterval(interval)
+    }, [nextRefreshTime])
+
+    if (!nextRefreshTime) {
+        return <span style={{ color: '#64748b' }}>等待中...</span>
+    }
+
+    return (
+        <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <span style={{ color: '#059669', fontFamily: 'monospace', fontWeight: 600 }}>{countdown}</span>
+            <span style={{ color: '#64748b' }}>后刷新</span>
+        </span>
+    )
+})
+
+function Switch({ checked, onChange }: { checked: boolean; onChange: (c: boolean) => void }) {
+    return (
+        <button
+            onClick={() => onChange(!checked)}
+            className={`
+                relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 enhance-switch
+                ${checked ? 'bg-primary enhance-switch-checked' : 'bg-slate-400 dark:bg-slate-600 enhance-switch-unchecked'}
+            `}
+        >
             <span
+                className={`
+                    pointer-events-none block h-4 w-4 rounded-full bg-white shadow-lg ring-0 enhance-switch-thumb
+                    ${checked ? 'translate-x-4' : 'translate-x-0'}
+                `}
                 style={{
-                    position: 'absolute',
-                    top: '2px',
-                    left: checked ? '18px' : '2px',
-                    width: '16px',
-                    height: '16px',
-                    background: 'white',
-                    borderRadius: '50%',
-                    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
-                    transition: 'left 0.2s',
+                    transform: checked ? 'translateX(100%)' : 'translateX(0)'
                 }}
             />
         </button>
     )
 }
 
-// 时间配置组件 - 支持多个定时
 function ScheduleTimeConfig({ times, onChange }: { times: string[]; onChange: (times: string[]) => void }) {
     const [newTime, setNewTime] = useState('')
+    const [isAdding, setIsAdding] = useState(false)
 
     const addTime = () => {
         if (newTime && !times.includes(newTime)) {
             onChange([...times, newTime].sort())
             setNewTime('')
+            setIsAdding(false)
         }
     }
 
-    const removeTime = (time: string) => {
-        onChange(times.filter(t => t !== time))
+    const cancelAdd = () => {
+        setNewTime('')
+        setIsAdding(false)
     }
 
     return (
-        <div style={{
-            padding: '12px',
-            background: 'rgba(0,0,0,0.2)',
-            borderRadius: '8px',
-        }}>
-            <div style={{ fontSize: '12px', color: 'var(--muted-foreground)', marginBottom: '8px' }}>
-                重置时间表 ({times.length} 个定时)
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
-                {times.length === 0 ? (
-                    <span style={{ fontSize: '12px', color: 'var(--muted-foreground)', opacity: 0.5 }}>暂无定时，请添加</span>
-                ) : (
-                    times.map(time => (
-                        <span
-                            key={time}
-                            style={{
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '4px',
-                                background: 'rgba(16, 185, 129, 0.2)',
-                                color: '#10b981',
-                                padding: '4px 8px',
-                                borderRadius: '4px',
-                                fontSize: '12px',
-                            }}
-                        >
-                            {time}
-                            <button
-                                onClick={() => removeTime(time)}
+        <div
+            style={{
+                position: 'relative',
+                padding: '12px',
+                borderRadius: '16px',
+                background: 'linear-gradient(to bottom right, rgba(238,242,255,0.5), rgba(245,243,255,0.5))',
+                border: '1px solid rgba(199,210,254,0.5)',
+                transition: 'all 300ms',
+            }}
+        >
+            {/* Header with Sparkle */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                <div style={{
+                    padding: '6px',
+                    borderRadius: '8px',
+                    backgroundColor: 'rgba(255,255,255,0.6)',
+                    color: '#6366f1',
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                }}>
+                    <IconSparkles style={{ width: '14px', height: '14px' }} />
+                </div>
+                <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '12px', fontWeight: 600, color: '#334155' }}>自动重置计划</div>
+                    <div style={{ fontSize: '10px', color: '#64748b', fontWeight: 500 }}>每天将在指定时间执行</div>
+                </div>
+
+                {/* Add Time Button / Input */}
+                <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    overflow: 'hidden',
+                }}>
+                    {isAdding ? (
+                        <>
+                            <input
+                                type="time"
+                                value={newTime}
+                                onChange={(e) => setNewTime(e.target.value)}
+                                autoFocus
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') addTime()
+                                    if (e.key === 'Escape') cancelAdd()
+                                }}
                                 style={{
-                                    background: 'none',
+                                    width: '85px',
+                                    padding: '4px 8px',
+                                    fontSize: '11px',
+                                    fontFamily: 'monospace',
+                                    fontWeight: 500,
+                                    color: '#4f46e5',
+                                    backgroundColor: '#ffffff',
+                                    border: '1px solid #c7d2fe',
+                                    borderRadius: '6px',
+                                    outline: 'none',
+                                    animation: 'slideIn 150ms ease-out',
+                                }}
+                            />
+                            <button
+                                onClick={addTime}
+                                disabled={!newTime || times.includes(newTime)}
+                                style={{
+                                    padding: '4px 8px',
+                                    fontSize: '11px',
+                                    fontWeight: 600,
+                                    color: !newTime || times.includes(newTime) ? '#94a3b8' : '#ffffff',
+                                    backgroundColor: !newTime || times.includes(newTime) ? '#e2e8f0' : '#6366f1',
                                     border: 'none',
-                                    color: 'inherit',
-                                    cursor: 'pointer',
-                                    padding: 0,
-                                    fontSize: '14px',
-                                    lineHeight: 1,
+                                    borderRadius: '6px',
+                                    cursor: !newTime || times.includes(newTime) ? 'not-allowed' : 'pointer',
+                                    transition: 'all 150ms',
+                                    animation: 'slideIn 150ms ease-out',
                                 }}
                             >
-                                ×
+                                确定
                             </button>
-                        </span>
+                            <button
+                                onClick={cancelAdd}
+                                style={{
+                                    padding: '4px 6px',
+                                    fontSize: '11px',
+                                    fontWeight: 500,
+                                    color: '#64748b',
+                                    backgroundColor: 'transparent',
+                                    border: '1px solid #e2e8f0',
+                                    borderRadius: '6px',
+                                    cursor: 'pointer',
+                                    transition: 'all 150ms',
+                                    animation: 'slideIn 150ms ease-out',
+                                }}
+                            >
+                                取消
+                            </button>
+                        </>
+                    ) : (
+                        <button
+                            onClick={() => setIsAdding(true)}
+                            style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                padding: '4px 10px',
+                                fontSize: '11px',
+                                fontWeight: 500,
+                                color: '#6366f1',
+                                backgroundColor: 'rgba(238,242,255,1)',
+                                border: '1px solid rgba(199,210,254,1)',
+                                borderRadius: '9999px',
+                                cursor: 'pointer',
+                                transition: 'all 150ms',
+                            }}
+                        >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ width: '12px', height: '12px' }}>
+                                <path d="M12 5v14M5 12h14" />
+                            </svg>
+                            添加
+                        </button>
+                    )}
+                </div>
+            </div>
+
+            {/* Chips Container */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px', minHeight: '32px' }}>
+                {times.length === 0 ? (
+                    <span style={{ fontSize: '11px', color: '#94a3b8' }}>暂无计划时间</span>
+                ) : (
+                    times.map(time => (
+                        <div
+                            key={time}
+                            style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '6px',
+                                paddingLeft: '12px',
+                                paddingRight: '4px',
+                                paddingTop: '4px',
+                                paddingBottom: '4px',
+                                borderRadius: '12px',
+                                backgroundColor: '#ffffff',
+                                border: '1px solid #e2e8f0',
+                                boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                                cursor: 'default',
+                                userSelect: 'none',
+                            }}
+                        >
+                            <span style={{ fontSize: '12px', fontWeight: 700, fontFamily: 'monospace', color: '#334155' }}>{time}</span>
+                            <button
+                                onClick={() => onChange(times.filter(t => t !== time))}
+                                style={{
+                                    padding: '4px',
+                                    borderRadius: '9999px',
+                                    border: 'none',
+                                    background: 'transparent',
+                                    color: '#94a3b8',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                }}
+                            >
+                                <IconX style={{ width: '12px', height: '12px' }} />
+                            </button>
+                        </div>
                     ))
                 )}
             </div>
-            <div style={{ display: 'flex', gap: '8px' }}>
-                <input
-                    type="time"
-                    value={newTime}
-                    onChange={(e) => setNewTime(e.target.value)}
-                    style={{
-                        flex: 1,
-                        background: 'var(--background)',
-                        border: '1px solid var(--border)',
-                        borderRadius: '6px',
-                        padding: '6px 10px',
-                        fontSize: '12px',
-                        color: 'var(--foreground)',
-                        outline: 'none',
-                    }}
-                />
-                <button
-                    onClick={addTime}
-                    style={{
-                        padding: '6px 12px',
-                        background: 'var(--primary)',
-                        color: 'var(--primary-foreground)',
-                        border: 'none',
-                        borderRadius: '6px',
-                        fontSize: '12px',
-                        fontWeight: 500,
-                        cursor: 'pointer',
-                    }}
-                >
-                    添加
-                </button>
-            </div>
+
+            {/* Animation Styles */}
+            <style>{`
+                @keyframes slideIn {
+                    from {
+                        opacity: 0;
+                        transform: translateX(8px);
+                    }
+                    to {
+                        opacity: 1;
+                        transform: translateX(0);
+                    }
+                }
+            `}</style>
         </div>
     )
 }
 
-// 根据路径获取页面名称 - 修复"我的订阅"匹配
+function IconSparkles({ className, style }: { className?: string; style?: React.CSSProperties }) {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className={className} style={style}>
+            <path d="M9.75 3.031c.427-1.374 2.073-1.374 2.5 0l1.203 3.864 3.864 1.203c1.374.427 1.374 2.073 0 2.5l-3.864 1.203-1.203 3.864c-.427 1.374-2.073 1.374-2.5 0l-1.203-3.864-3.864-1.203c-1.374-.427-1.374-2.073 0-2.5l3.864-1.203L9.75 3.031Z" />
+            <path d="M16.75 14.031c.427-1.374 2.073-1.374 2.5 0l.601 1.932 1.932.601c1.374.427 1.374 2.073 0 2.5l-1.932.601-.601 1.932c-.427 1.374-2.073 1.374-2.5 0l-.601-1.932-1.932-.601c-1.374-.427-1.374-2.073 0-2.5l1.932-.601.601-1.932Z" />
+        </svg>
+    )
+}
+
+// --- Helpers ---
+
+// 日志图标组件
+type LogIconProps = { style?: React.CSSProperties }
+
+const LogIconSuccess = ({ style }: LogIconProps) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={style}>
+        <polyline points="20 6 9 17 4 12" />
+    </svg>
+)
+
+const LogIconSkip = ({ style }: LogIconProps) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+        <circle cx="12" cy="12" r="10" />
+        <line x1="8" y1="12" x2="16" y2="12" />
+    </svg>
+)
+
+const LogIconError = ({ style }: LogIconProps) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={style}>
+        <line x1="18" y1="6" x2="6" y2="18" />
+        <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+)
+
+const LogIconSection = ({ style }: LogIconProps) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+        <polygon points="5 3 19 12 5 21 5 3" />
+    </svg>
+)
+
+const LogIconStep = ({ style }: LogIconProps) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+        <polyline points="9 18 15 12 9 6" />
+    </svg>
+)
+
+const LogIconRefresh = ({ style }: LogIconProps) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+        <path d="M21 2v6h-6" />
+        <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+        <path d="M3 22v-6h6" />
+        <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+    </svg>
+)
+
+const LogIconNav = ({ style }: LogIconProps) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+        <line x1="5" y1="12" x2="19" y2="12" />
+        <polyline points="12 5 19 12 12 19" />
+    </svg>
+)
+
+const LogIconInfo = ({ style }: LogIconProps) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+        <circle cx="12" cy="12" r="10" />
+        <line x1="12" y1="16" x2="12" y2="12" />
+        <line x1="12" y1="8" x2="12.01" y2="8" />
+    </svg>
+)
+
+function getLogStyle(log: string): { color: string; bgColor: string; Icon: React.FC<LogIconProps> } {
+    // 成功类
+    if (log.includes('成功') || log.includes('✓') || log.includes('完成')) {
+        return { color: '#059669', bgColor: 'rgba(16, 185, 129, 0.08)', Icon: LogIconSuccess }
+    }
+    // 跳过/警告类
+    if (log.includes('跳过') || log.includes('○') || log.includes('冷却')) {
+        return { color: '#d97706', bgColor: 'rgba(245, 158, 11, 0.08)', Icon: LogIconSkip }
+    }
+    // 失败/错误类
+    if (log.includes('✗') || log.includes('失败') || log.includes('错误')) {
+        return { color: '#dc2626', bgColor: 'rgba(239, 68, 68, 0.08)', Icon: LogIconError }
+    }
+    // 分隔线
+    if (log.includes('==========')) {
+        return { color: '#6366f1', bgColor: 'rgba(99, 102, 241, 0.06)', Icon: LogIconSection }
+    }
+    // 步骤类
+    if (log.includes('步骤')) {
+        return { color: '#0284c7', bgColor: 'rgba(14, 165, 233, 0.06)', Icon: LogIconStep }
+    }
+    // 刷新类
+    if (log.includes('刷新')) {
+        return { color: '#0891b2', bgColor: 'transparent', Icon: LogIconRefresh }
+    }
+    // 跳转类
+    if (log.includes('跳转') || log.includes('pending')) {
+        return { color: '#7c3aed', bgColor: 'rgba(139, 92, 246, 0.06)', Icon: LogIconNav }
+    }
+    // 默认
+    return { color: '#334155', bgColor: 'transparent', Icon: LogIconInfo }
+}
+
 function getPageName(path: string): string {
     const routes: Record<string, string> = {
         '/home-page': '首页',
@@ -598,5 +1131,48 @@ function getPageName(path: string): string {
     for (const [route, name] of Object.entries(routes)) {
         if (path.includes(route)) return name
     }
-    return path || '首页'
+    return path || '未知页面'
 }
+
+// --- Icons ---
+
+function IconSettings({ className, style }: { className?: string; style?: React.CSSProperties }) {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+    )
+}
+
+function IconFileText({ className, style }: { className?: string; style?: React.CSSProperties }) {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
+            <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+            <polyline points="14 2 14 8 20 8" />
+            <line x1="16" y1="13" x2="8" y2="13" />
+            <line x1="16" y1="17" x2="8" y2="17" />
+            <line x1="10" y1="9" x2="8" y2="9" />
+        </svg>
+    )
+}
+
+function IconTrash({ className, style }: { className?: string; style?: React.CSSProperties }) {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
+            <path d="M3 6h18" />
+            <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+            <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+        </svg>
+    )
+}
+
+function IconX({ className, style }: { className?: string; style?: React.CSSProperties }) {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
+            <path d="m6 6 12 12" />
+            <path d="m18 6-12 12" />
+        </svg>
+    )
+}
+
