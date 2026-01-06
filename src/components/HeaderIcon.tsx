@@ -47,7 +47,7 @@ export function HeaderIcon({ onClick, isActive }: HeaderIconProps) {
             // 创建按钮，样式与站点其他按钮一致
             const btn = document.createElement('button')
             btn.id = 'enhance-header-icon'
-            btn.title = '88code 增强助手'
+            btn.title = '88code 助手'
             btn.setAttribute('data-slot', 'tooltip-trigger')
             btn.className = getIconClassName(isActiveRef.current)
             btn.innerHTML = `<img src="${logoUrl}" alt="88tools" class="size-5 rounded" />`

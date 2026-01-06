@@ -9,10 +9,10 @@ export default defineConfig({
     monkey({
       entry: 'src/main.tsx',
       userscript: {
-        name: '88code 增强助手',
+        name: '88code 助手',
         namespace: 'https://github.com/authwang',
         version: '1.0.0',
-        description: '88code.ai 增强功能：服务状态整合、自动刷新、定时重置',
+        description: '88code.ai 助手：服务状态整合、自动刷新、定时重置',
         author: 'authwang',
         match: ['https://www.88code.ai/*', 'https://88code.ai/*'],
         icon: 'https://www.88code.ai/assets/logo-BCIlXRt9.png',

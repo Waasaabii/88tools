@@ -1,4 +1,4 @@
-/* 88tools 增强脚本样式 */
+/* 88tools 助手脚本样式 */
 
 /* 根容器 */
 #88tools-enhance-root {
@@ -25,4 +25,15 @@
   background-size: 200%, 100%;
   mix-blend-mode: difference;
   animation: ray-animate 90s linear infinite;
+}
+
+/* 旋转动画 */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }

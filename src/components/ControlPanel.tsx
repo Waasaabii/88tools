@@ -1,5 +1,6 @@
 import type { EnhanceConfig } from './EnhanceManager'
 import { REFRESH_INTERVAL_TEMPLATES } from './EnhanceManager'
+import type { SubscriptionInfo } from '../hooks/useSubscriptions'
 import { useState, useRef, useEffect, useCallback, memo, useMemo } from 'react'
 import logoUrl from '/logo.gif'
 
@@ -12,6 +13,20 @@ interface ControlPanelProps {
     resetStatus: 'idle' | 'waiting' | 'cooling'
     resetLogs: string[]
     onClearLogs: () => void
+    // 订阅相关
+    subscriptions: SubscriptionInfo[]
+    selectedSubscriptionIds: Set<string>
+    onToggleSubscription: (id: string) => void
+    onSelectAllSubscriptions: () => void
+    onDeselectAllSubscriptions: () => void
+    onScanSubscriptions: () => void
+    isScanning: boolean
+    isSubscriptionPage: boolean
+    // 手动重置
+    onForceReset?: () => void
+    isResetting?: boolean
+    // 清空缓存
+    onClearCache?: () => void
 }
 
 export function ControlPanel({
@@ -23,6 +38,20 @@ export function ControlPanel({
     resetStatus,
     resetLogs,
     onClearLogs,
+    // 订阅相关
+    subscriptions,
+    selectedSubscriptionIds,
+    onToggleSubscription,
+    onSelectAllSubscriptions,
+    onDeselectAllSubscriptions,
+    onScanSubscriptions,
+    isScanning,
+    isSubscriptionPage,
+    // 手动重置
+    onForceReset,
+    isResetting,
+    // 清空缓存
+    onClearCache,
 }: ControlPanelProps) {
     const isMinimized = config.panelMinimized
     const panelRef = useRef<HTMLDivElement>(null)
@@ -173,41 +202,123 @@ export function ControlPanel({
     return (
         <div
             ref={panelRef}
-            className={`
-                fixed flex flex-col overflow-hidden font-sans
-                bg-card border border-slate-300 dark:border-slate-600 enhance-panel-border shadow-2xl rounded-xl
-                animate-in fade-in zoom-in-95 will-change-transform
-            `}
             style={{
+                position: 'fixed',
                 left: `${position.x}px`,
                 top: `${position.y}px`,
                 width: `${size.width}px`,
                 height: `${size.height}px`,
-                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                background: 'rgba(255, 255, 255, 0.45)',
+                backdropFilter: 'blur(24px) saturate(180%)',
+                WebkitBackdropFilter: 'blur(24px) saturate(180%)',
+                border: '1px solid rgba(255, 255, 255, 0.5)',
+                borderRadius: '16px',
+                boxShadow: '0 8px 32px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.8)',
                 zIndex: 2147483647,
             }}
         >
-            {/* Header */}
+            {/* Header - Glassmorphism Style */}
             <div
                 onMouseDown={handleMouseDown}
-                style={{ cursor: 'grab' }}
-                className="flex items-center justify-between h-10 px-4 border-b border-slate-200 dark:border-slate-700 enhance-header-border bg-muted/40 select-none"
+                style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    height: '48px',
+                    padding: '0 14px',
+                    borderBottom: '1px solid rgba(255, 255, 255, 0.4)',
+                    background: 'rgba(255, 255, 255, 0.25)',
+                    cursor: 'grab',
+                    userSelect: 'none',
+                }}
             >
-                <div className="flex items-center gap-2.5">
-                    <img src={logoUrl} alt="" className="size-5 rounded-sm shadow-sm" />
-                    <span className="text-sm font-semibold text-foreground tracking-tight">88code 增强</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <img
+                        src={logoUrl}
+                        alt=""
+                        style={{
+                            width: '24px',
+                            height: '24px',
+                            borderRadius: '6px',
+                            boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+                        }}
+                    />
+                    <span style={{
+                        fontSize: '14px',
+                        fontWeight: 600,
+                        color: '#1e293b',
+                        letterSpacing: '-0.02em',
+                        textShadow: '0 1px 2px rgba(255,255,255,0.5)',
+                    }}>
+                        88code 助手
+                    </span>
                 </div>
-                <button
-                    onClick={() => onConfigChange({ panelMinimized: true })}
-                    className="p-1.5 -mr-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition-colors"
-                    title="最小化"
-                >
-                    <IconX className="size-4" />
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    {/* 清空缓存按钮 */}
+                    <button
+                        onClick={() => {
+                            if (confirm('确定要清空所有缓存数据吗？页面将会刷新。')) {
+                                onClearCache?.()
+                            }
+                        }}
+                        style={{
+                            padding: '4px 8px',
+                            fontSize: '10px',
+                            borderRadius: '6px',
+                            border: '1px solid #fecaca',
+                            background: '#fef2f2',
+                            color: '#dc2626',
+                            cursor: 'pointer',
+                            fontWeight: 500,
+                        }}
+                        title="清空所有缓存数据"
+                    >
+                        清缓存
+                    </button>
+                    {/* 最小化按钮 */}
+                    <button
+                        onClick={() => onConfigChange({ panelMinimized: true })}
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            width: '28px',
+                            height: '28px',
+                            border: 'none',
+                            background: 'rgba(0, 0, 0, 0.06)',
+                            borderRadius: '8px',
+                            cursor: 'pointer',
+                            color: '#475569',
+                            transition: 'all 150ms',
+                        }}
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.background = 'rgba(0, 0, 0, 0.12)'
+                            e.currentTarget.style.color = '#1e293b'
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.background = 'rgba(0, 0, 0, 0.06)'
+                            e.currentTarget.style.color = '#475569'
+                        }}
+                        title="最小化"
+                    >
+                        <IconX style={{ width: '14px', height: '14px' }} />
+                    </button>
+                </div>
             </div>
 
             {/* Content */}
-            <div className="flex-1 overflow-hidden relative flex flex-col bg-card">
+            <div style={{
+                flex: 1,
+                overflow: 'hidden',
+                position: 'relative',
+                display: 'flex',
+                flexDirection: 'column',
+                background: 'rgba(255, 255, 255, 0.15)',
+            }}>
                 <ControlPanelContent
                     config={config}
                     onConfigChange={onConfigChange}
@@ -217,6 +328,17 @@ export function ControlPanel({
                     resetStatus={resetStatus}
                     resetLogs={resetLogs}
                     onClearLogs={onClearLogs}
+                    subscriptions={subscriptions}
+                    selectedSubscriptionIds={selectedSubscriptionIds}
+                    onToggleSubscription={onToggleSubscription}
+                    onSelectAllSubscriptions={onSelectAllSubscriptions}
+                    onDeselectAllSubscriptions={onDeselectAllSubscriptions}
+                    onScanSubscriptions={onScanSubscriptions}
+                    isScanning={isScanning}
+                    isSubscriptionPage={isSubscriptionPage}
+                    onForceReset={onForceReset}
+                    isResetting={isResetting}
+                    onClearCache={onClearCache}
                 />
             </div>
 
@@ -286,13 +408,23 @@ export function ControlPanel({
 }
 
 const ControlPanelContent = memo(function ControlPanelContent(props: ControlPanelProps) {
-    // ... keep existing code ...
+    const [activeTab, setActiveTab] = useState<'settings' | 'reset' | 'logs'>('settings')
 
-    const [activeTab, setActiveTab] = useState<'settings' | 'logs'>('settings')
+    // 计算滑块位置
+    const getSliderTransform = () => {
+        switch (activeTab) {
+            case 'settings': return 'translateX(0)'
+            case 'reset': return 'translateX(100%)'
+            case 'logs': return 'translateX(200%)'
+        }
+    }
+
+    // 可重置订阅数量
+    const resettableCount = props.subscriptions.filter(s => s.canReset).length
 
     return (
         <div className="flex flex-col h-full">
-            {/* Tab Switcher - Capsule Style (Inline Styles) */}
+            {/* Tab Switcher - Capsule Style (3 Tabs) */}
             <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border, #e2e8f0)', userSelect: 'none' }}>
                 <div
                     style={{
@@ -306,19 +438,19 @@ const ControlPanelContent = memo(function ControlPanelContent(props: ControlPane
                         overflow: 'hidden',
                     }}
                 >
-                    {/* Sliding Capsule Background */}
+                    {/* Sliding Capsule Background - 1/3 width for 3 tabs */}
                     <div
                         style={{
                             position: 'absolute',
                             top: '4px',
                             bottom: '4px',
                             left: '4px',
-                            width: 'calc(50% - 4px)',
+                            width: 'calc(33.333% - 2.67px)',
                             borderRadius: '9999px',
                             backgroundColor: '#ffffff',
                             boxShadow: '0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06)',
                             transition: 'transform 200ms ease-in-out',
-                            transform: activeTab === 'logs' ? 'translateX(calc(100% + 0px))' : 'translateX(0)',
+                            transform: getSliderTransform(),
                         }}
                     />
 
@@ -327,6 +459,13 @@ const ControlPanelContent = memo(function ControlPanelContent(props: ControlPane
                         onClick={() => setActiveTab('settings')}
                         icon={<IconSettings style={{ width: '14px', height: '14px' }} />}
                         label="设置"
+                    />
+                    <TabButton
+                        active={activeTab === 'reset'}
+                        onClick={() => setActiveTab('reset')}
+                        icon={<IconRefreshCw style={{ width: '14px', height: '14px' }} />}
+                        label="重置"
+                        badge={resettableCount > 0 ? resettableCount : undefined}
                     />
                     <TabButton
                         active={activeTab === 'logs'}
@@ -340,20 +479,18 @@ const ControlPanelContent = memo(function ControlPanelContent(props: ControlPane
 
             {/* Tab Panels */}
             <div className="flex-1 overflow-y-auto custom-scrollbar">
-                {activeTab === 'settings' ? (
-                    <SettingsPanel {...props} />
-                ) : (
-                    <LogsPanel logs={props.resetLogs} onClear={props.onClearLogs} />
-                )}
+                {activeTab === 'settings' && <SettingsPanel {...props} />}
+                {activeTab === 'reset' && <ResetPanel {...props} />}
+                {activeTab === 'logs' && <LogsPanel logs={props.resetLogs} onClear={props.onClearLogs} />}
             </div>
         </div>
     )
 })
 
+
 function SettingsPanel({
     config, onConfigChange, currentPath,
     nextRefreshTime,
-    resetStatus, nextResetTime
 }: ControlPanelProps) {
     return (
         <div className="divide-y divide-border/40">
@@ -376,7 +513,7 @@ function SettingsPanel({
 
                 <SettingRow
                     label="状态指示器"
-                    description="在页面左上角显示服务状态悬浮球"
+                    description="在页面插入首页服务状态指示器"
                     control={
                         <Switch
                             checked={config.showServiceStatus ?? true}
@@ -412,8 +549,167 @@ function SettingsPanel({
                         </div>
                     }
                 />
+            </div>
+        </div>
+    )
+}
+
+// 重置面板 - 订阅选择和定时重置设置
+function ResetPanel({
+    config, onConfigChange,
+    nextResetTime, resetStatus,
+    subscriptions, selectedSubscriptionIds,
+    onToggleSubscription, onSelectAllSubscriptions, onDeselectAllSubscriptions,
+    onScanSubscriptions, isScanning,
+    onForceReset, isResetting,
+}: ControlPanelProps) {
+    // 有重置按钮的订阅数量（包括冷却中的）
+    const selectableCount = subscriptions.filter(s => s.hasResetButton !== false).length
+    const selectedCount = subscriptions.filter(s => selectedSubscriptionIds.has(s.id)).length
+    // 选中的可立即重置的数量
+    const selectedReadyCount = subscriptions.filter(s => s.canReset && selectedSubscriptionIds.has(s.id)).length
+
+    return (
+        <div className="divide-y divide-border/40">
+            {/* Section: 订阅选择 */}
+            <div className="py-3">
+                <div className="px-4 pb-2 flex items-center justify-between">
+                    <div className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
+                        选择要重置的订阅
+                    </div>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                        <button
+                            onClick={() => onScanSubscriptions()}
+                            disabled={isScanning}
+                            style={{
+                                padding: '4px 8px',
+                                fontSize: '10px',
+                                borderRadius: '4px',
+                                border: '1px solid #e2e8f0',
+                                background: '#fff',
+                                color: isScanning ? '#94a3b8' : '#64748b',
+                                cursor: isScanning ? 'not-allowed' : 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                            }}
+                        >
+                            <IconRefreshCw style={{
+                                width: '10px',
+                                height: '10px',
+                                animation: isScanning ? 'spin 1s linear infinite' : 'none'
+                            }} />
+                            扫描
+                        </button>
+                        {subscriptions.length > 0 && (
+                            <button
+                                onClick={selectedCount === selectableCount ? onDeselectAllSubscriptions : onSelectAllSubscriptions}
+                                style={{
+                                    padding: '4px 8px',
+                                    fontSize: '10px',
+                                    borderRadius: '4px',
+                                    border: '1px solid #e2e8f0',
+                                    background: '#fff',
+                                    color: '#64748b',
+                                    cursor: 'pointer',
+                                }}
+                            >
+                                {selectedCount === selectableCount ? '取消全选' : '全选'}
+                            </button>
+                        )}
+                    </div>
+                </div>
+
+                {/* 订阅列表 */}
+                <div style={{ padding: '0 12px' }}>
+                    {subscriptions.length === 0 ? (
+                        <div style={{
+                            padding: '20px',
+                            textAlign: 'center',
+                            color: '#94a3b8',
+                            fontSize: '12px',
+                        }}>
+                            {isScanning ? '正在扫描...' : '点击"扫描"按钮获取订阅列表'}
+                        </div>
+                    ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            {subscriptions.map(sub => (
+                                <SubscriptionCard
+                                    key={sub.id}
+                                    subscription={sub}
+                                    isSelected={selectedSubscriptionIds.has(sub.id)}
+                                    onToggle={() => onToggleSubscription(sub.id)}
+                                />
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                {/* 立即重置按钮 */}
+                {subscriptions.length > 0 && selectedCount > 0 && onForceReset && (
+                    <div style={{ padding: '12px 12px 0' }}>
+                        <button
+                            onClick={onForceReset}
+                            disabled={isResetting}
+                            style={{
+                                width: '100%',
+                                padding: '10px 16px',
+                                fontSize: '13px',
+                                fontWeight: 600,
+                                borderRadius: '8px',
+                                border: 'none',
+                                background: isResetting
+                                    ? '#94a3b8'
+                                    : selectedReadyCount > 0
+                                        ? 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)'
+                                        : 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                                color: '#fff',
+                                cursor: isResetting ? 'not-allowed' : 'pointer',
+                                boxShadow: '0 2px 8px rgba(59, 130, 246, 0.25)',
+                                transition: 'all 150ms',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '8px',
+                            }}
+                        >
+                            {isResetting ? (
+                                <>
+                                    <IconRefreshCw style={{
+                                        width: '14px',
+                                        height: '14px',
+                                        animation: 'spin 1s linear infinite'
+                                    }} />
+                                    重置中...
+                                </>
+                            ) : (
+                                <>
+                                    <IconZap style={{ width: '14px', height: '14px' }} />
+                                    立即重置 ({selectedCount} 个)
+                                    {selectedReadyCount < selectedCount && (
+                                        <span style={{
+                                            fontSize: '10px',
+                                            opacity: 0.8,
+                                            marginLeft: '4px',
+                                        }}>
+                                            含冷却中
+                                        </span>
+                                    )}
+                                </>
+                            )}
+                        </button>
+                    </div>
+                )}
+            </div>
+
+            {/* Section: 定时重置设置 */}
+            <div className="py-3">
+                <div className="px-4 pb-1.5">
+                    <div className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">定时重置</div>
+                </div>
+
                 <SettingRow
-                    label="定时重置"
+                    label="启用定时重置"
                     description={
                         config.scheduledResetEnabled ? (
                             <ResetCountdownDisplay
@@ -443,6 +739,191 @@ function SettingsPanel({
     )
 }
 
+// 订阅卡片组件
+function SubscriptionCard({
+    subscription,
+    isSelected,
+    onToggle
+}: {
+    subscription: SubscriptionInfo
+    isSelected: boolean
+    onToggle: () => void
+}) {
+    const { name, type, balance, canReset, isOnCooldown, cooldownText, resetCount, hasResetButton, nextResetAvailableAt, daysRemaining } = subscription
+
+    // 有重置按钮的订阅都可以选中（包括冷却中的）
+    const isSelectable = hasResetButton !== false  // undefined 时也可选（兼容旧数据）
+
+    return (
+        <div
+            onClick={isSelectable ? onToggle : undefined}
+            style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                padding: '10px 12px',
+                borderRadius: '8px',
+                background: isSelected ? 'rgba(59, 130, 246, 0.08)' : 'rgba(241, 245, 249, 0.6)',
+                border: `1px solid ${isSelected ? 'rgba(59, 130, 246, 0.3)' : 'rgba(226, 232, 240, 0.8)'}`,
+                cursor: isSelectable ? 'pointer' : 'default',
+                opacity: isSelectable ? 1 : 0.6,
+                transition: 'all 150ms',
+            }}
+        >
+            {/* Checkbox */}
+            <div style={{
+                width: '16px',
+                height: '16px',
+                borderRadius: '4px',
+                border: `2px solid ${isSelected ? '#3b82f6' : '#cbd5e1'}`,
+                background: isSelected ? '#3b82f6' : 'transparent',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+                transition: 'all 150ms',
+            }}>
+                {isSelected && (
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3">
+                        <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                )}
+            </div>
+
+            {/* Info */}
+            <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    color: '#1e293b',
+                }}>
+                    {name}
+                    <span style={{
+                        fontSize: '10px',
+                        fontWeight: 400,
+                        color: '#94a3b8',
+                        padding: '1px 6px',
+                        background: 'rgba(148, 163, 184, 0.1)',
+                        borderRadius: '4px',
+                    }}>
+                        {type}
+                    </span>
+                    {daysRemaining !== undefined && (
+                        <span style={{
+                            fontSize: '10px',
+                            fontWeight: 500,
+                            color: daysRemaining <= 7 ? '#ef4444' : daysRemaining <= 30 ? '#f59e0b' : '#22c55e',
+                            padding: '1px 6px',
+                            background: daysRemaining <= 7 ? 'rgba(239, 68, 68, 0.1)' : daysRemaining <= 30 ? 'rgba(245, 158, 11, 0.1)' : 'rgba(34, 197, 94, 0.1)',
+                            borderRadius: '4px',
+                        }}>
+                            {daysRemaining}天
+                        </span>
+                    )}
+                </div>
+                {balance && (
+                    <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
+                        {balance}
+                    </div>
+                )}
+            </div>
+
+            {/* Status */}
+            <div style={{ flexShrink: 0 }}>
+                {isOnCooldown ? (
+                    nextResetAvailableAt ? (
+                        <CooldownCountdown endTime={nextResetAvailableAt} />
+                    ) : (
+                        <span style={{
+                            fontSize: '10px',
+                            color: '#f59e0b',
+                            background: 'rgba(245, 158, 11, 0.1)',
+                            padding: '2px 8px',
+                            borderRadius: '9999px',
+                        }}>
+                            {cooldownText || '冷却中'}
+                        </span>
+                    )
+                ) : canReset ? (
+                    <span style={{
+                        fontSize: '10px',
+                        color: '#10b981',
+                        background: 'rgba(16, 185, 129, 0.1)',
+                        padding: '2px 8px',
+                        borderRadius: '9999px',
+                    }}>
+                        可重置{resetCount !== undefined ? ` (${resetCount}次)` : ''}
+                    </span>
+                ) : (
+                    <span style={{
+                        fontSize: '10px',
+                        color: '#94a3b8',
+                    }}>
+                        无按钮
+                    </span>
+                )}
+            </div>
+        </div>
+    )
+}
+
+// 精确冷却倒计时组件
+const CooldownCountdown = memo(function CooldownCountdown({
+    endTime
+}: {
+    endTime: Date | string  // 支持字符串（从持久化恢复时）
+}) {
+    const [remaining, setRemaining] = useState('')
+
+    useEffect(() => {
+        const update = () => {
+            const now = new Date()
+            // 兼容字符串和 Date 对象
+            const endDate = typeof endTime === 'string' ? new Date(endTime) : endTime
+            const diffMs = endDate.getTime() - now.getTime()
+
+            if (diffMs <= 0) {
+                setRemaining('可重置')
+                return
+            }
+
+            const hours = Math.floor(diffMs / 3600000)
+            const mins = Math.floor((diffMs % 3600000) / 60000)
+            const secs = Math.floor((diffMs % 60000) / 1000)
+
+            if (hours > 0) {
+                setRemaining(`${hours}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`)
+            } else {
+                setRemaining(`${mins}:${secs.toString().padStart(2, '0')}`)
+            }
+        }
+
+        update()
+        const timer = setInterval(update, 1000)
+        return () => clearInterval(timer)
+    }, [endTime])
+
+    const isReady = remaining === '可重置'
+
+    return (
+        <span style={{
+            fontSize: '10px',
+            fontFamily: 'ui-monospace, monospace',
+            fontWeight: 600,
+            color: isReady ? '#10b981' : '#f59e0b',
+            background: isReady ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)',
+            padding: '2px 8px',
+            borderRadius: '9999px',
+        }}>
+            {remaining}
+        </span>
+    )
+})
+
+
 function LogsPanel({ logs, onClear }: { logs: string[], onClear: () => void }) {
     const listRef = useRef<HTMLDivElement>(null)
 
@@ -458,8 +939,8 @@ function LogsPanel({ logs, onClear }: { logs: string[], onClear: () => void }) {
 
             // 只合并可合并的日志类型（刷新类、跳过类等重复性高的）
             const isMergeable = content.includes('刷新') ||
-                               content.includes('跳过') ||
-                               content.includes('冷却')
+                content.includes('跳过') ||
+                content.includes('冷却')
 
             if (prev && isMergeable) {
                 const prevContent = prev.log.replace(/^\[\d{2}:\d{2}:\d{2}\]\s*/, '')
@@ -1136,6 +1617,17 @@ function getPageName(path: string): string {
 
 // --- Icons ---
 
+function IconRefreshCw({ className, style }: { className?: string; style?: React.CSSProperties }) {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
+            <path d="M21 2v6h-6" />
+            <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+            <path d="M3 22v-6h6" />
+            <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+        </svg>
+    )
+}
+
 function IconSettings({ className, style }: { className?: string; style?: React.CSSProperties }) {
     return (
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
@@ -1172,6 +1664,14 @@ function IconX({ className, style }: { className?: string; style?: React.CSSProp
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
             <path d="m6 6 12 12" />
             <path d="m18 6-12 12" />
+        </svg>
+    )
+}
+
+function IconZap({ className, style }: { className?: string; style?: React.CSSProperties }) {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
         </svg>
     )
 }

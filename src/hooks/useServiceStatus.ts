@@ -57,58 +57,119 @@ interface ServiceStatusResult {
 
 const STATUS_API_URL = 'https://www.88code.ai/status-api/api/v1/status'
 
-export function useServiceStatus(enabled: boolean = true): ServiceStatusResult {
-    const [data, setData] = useState<StatusApiResponse | null>(null)
-    const [isLoading, setIsLoading] = useState(false)
-    const [error, setError] = useState<string | null>(null)
-    const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+// 模块级单例：缓存数据和请求状态
+let cachedData: StatusApiResponse | null = null
+let cachedLastUpdated: Date | null = null
+let isRequesting = false
+let requestPromise: Promise<void> | null = null
+let subscriberCount = 0
+let refreshInterval: ReturnType<typeof setInterval> | null = null
 
-    const fetchStatus = useCallback(async () => {
+// 通知订阅者更新
+const subscribers = new Set<() => void>()
+function notifySubscribers() {
+    subscribers.forEach(fn => fn())
+}
+
+// 共享的 fetch 函数
+async function fetchStatusShared(): Promise<void> {
+    // 如果正在请求，等待现有请求完成
+    if (isRequesting && requestPromise) {
+        await requestPromise
+        return
+    }
+
+    isRequesting = true
+    console.log('[88tools] 正在获取服务状态...')
+
+    requestPromise = (async () => {
+        try {
+            const response = await fetch(STATUS_API_URL)
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`)
+            }
+            cachedData = await response.json()
+            cachedLastUpdated = new Date()
+            console.log('[88tools] 服务状态获取成功')
+        } catch (e) {
+            console.error('[88tools] 获取服务状态失败:', e)
+            throw e
+        } finally {
+            isRequesting = false
+            requestPromise = null
+            notifySubscribers()
+        }
+    })()
+
+    await requestPromise
+}
+
+export function useServiceStatus(enabled: boolean = true): ServiceStatusResult {
+    const [data, setData] = useState<StatusApiResponse | null>(cachedData)
+    const [isLoading, setIsLoading] = useState(isRequesting)
+    const [error, setError] = useState<string | null>(null)
+    const [lastUpdated, setLastUpdated] = useState<Date | null>(cachedLastUpdated)
+
+    // 同步本地状态与缓存
+    const syncFromCache = useCallback(() => {
+        setData(cachedData)
+        setLastUpdated(cachedLastUpdated)
+        setIsLoading(isRequesting)
+    }, [])
+
+    // 手动刷新
+    const refresh = useCallback(async () => {
         setIsLoading(true)
         setError(null)
-        console.log('[88tools] 正在获取服务状态...')
-
         try {
-            const response = await fetch(STATUS_API_URL, {
-                credentials: 'include',
-                headers: {
-                    'Accept': 'application/json',
-                }
-            })
-
-            if (!response.ok) {
-                throw new Error(`请求失败: ${response.status}`)
-            }
-
-            const result = await response.json() as StatusApiResponse
-            console.log('[88tools] 服务状态获取成功:', result.providers?.length, '个服务')
-            console.log('[88tools] 第一个服务 timeline 长度:', result.providers?.[0]?.timeline?.length)
-            setData(result)
-            setLastUpdated(new Date())
-        } catch (err) {
-            console.error('[88tools] 获取服务状态失败:', err)
-            setError(err instanceof Error ? err.message : '获取服务状态失败')
+            await fetchStatusShared()
+            syncFromCache()
+        } catch (e) {
+            setError(e instanceof Error ? e.message : '未知错误')
         } finally {
             setIsLoading(false)
         }
-    }, [])
+    }, [syncFromCache])
 
-    // 初始加载和定时刷新 - 只在 enabled 时运行
     useEffect(() => {
         if (!enabled) return
 
-        fetchStatus()
+        // 订阅更新
+        subscribers.add(syncFromCache)
+        subscriberCount++
 
-        // 每 30 秒自动刷新
-        const interval = setInterval(fetchStatus, 30 * 1000)
-        return () => clearInterval(interval)
-    }, [enabled, fetchStatus])
+        // 首次挂载且无缓存时请求
+        if (!cachedData && !isRequesting) {
+            refresh()
+        } else {
+            // 有缓存，直接同步
+            syncFromCache()
+        }
+
+        // 启动定时刷新（全局单例）
+        if (!refreshInterval) {
+            refreshInterval = setInterval(() => {
+                fetchStatusShared().catch(() => {})
+            }, 30 * 1000)
+        }
+
+        return () => {
+            subscribers.delete(syncFromCache)
+            subscriberCount--
+
+            // 所有订阅者都取消后，清理定时器
+            if (subscriberCount === 0 && refreshInterval) {
+                clearInterval(refreshInterval)
+                refreshInterval = null
+            }
+        }
+    }, [enabled, syncFromCache, refresh])
 
     return {
         data,
         isLoading,
         error,
-        refresh: fetchStatus,
+        refresh,
         lastUpdated,
     }
 }

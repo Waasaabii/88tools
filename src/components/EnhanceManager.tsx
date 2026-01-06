@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { GM_getValue, GM_setValue } from 'vite-plugin-monkey/dist/client'
+import { GM_getValue, GM_setValue, GM_deleteValue } from 'vite-plugin-monkey/dist/client'
 import { ControlPanel } from './ControlPanel'
 import { HeaderIcon } from './HeaderIcon'
 import { ServiceStatusCard } from './ServiceStatusCard'
@@ -8,6 +8,7 @@ import { useRouteWatch } from '../hooks/useRouteWatch'
 import { useServiceStatus } from '../hooks/useServiceStatus'
 import { useAutoRefresh } from '../hooks/useAutoRefresh'
 import { useScheduledReset } from '../hooks/useScheduledReset'
+import { useSubscriptions, type SubscriptionInfo } from '../hooks/useSubscriptions'
 
 // 配置存储键名 - 参考 linuxdo.js 的分离键名模式
 const CONFIG_KEYS = {
@@ -18,6 +19,8 @@ const CONFIG_KEYS = {
     AUTO_REFRESH_INTERVAL: '88tools_v1_auto_refresh_interval',
     SCHEDULED_RESET_ENABLED: '88tools_v1_scheduled_reset_enabled',
     SCHEDULED_RESET_TIMES: '88tools_v1_scheduled_reset_times',
+    SELECTED_SUBSCRIPTION_IDS: '88tools_v1_selected_subscription_ids',
+    SUBSCRIPTIONS: '88tools_v1_subscriptions',  // 订阅列表持久化
     PANEL_MINIMIZED: '88tools_v1_panel_minimized',
     PANEL_POSITION: '88tools_v1_panel_position',
     SHOW_SERVICE_STATUS: '88tools_v1_show_service_status',
@@ -144,6 +147,36 @@ export function EnhanceManager() {
         }, LOG_CONFIG.PERSIST_DEBOUNCE)
     }, [])
 
+    // [DEBUG] 拦截 API 请求以分析重置逻辑
+    useEffect(() => {
+        const originalFetch = window.fetch
+        window.fetch = async (input, init) => {
+            const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+
+            // 排除日志上报、socket等无关请求，只关注可能的业务操作
+            if (init && (init.method === 'POST' || init.method === 'DELETE' || init.method === 'PUT') && !url.includes('socket')) {
+                console.log('%c[API Capture] 捕获到潜在的业务请求:', 'color: #ef4444; font-weight: bold; font-size: 14px')
+                console.log('URL:', url)
+                console.log('Method:', init.method)
+                console.log('Headers:', init.headers)
+                console.log('Body:', init.body)
+
+                // 尝试解析 Body
+                try {
+                    if (typeof init.body === 'string') {
+                        console.log('Parsed Body:', JSON.parse(init.body))
+                    }
+                } catch (e) { /* ignore */ }
+            }
+
+            return originalFetch(input, init)
+        }
+
+        return () => {
+            window.fetch = originalFetch
+        }
+    }, [])
+
     // 添加日志（带时间戳）
     const addLog = useCallback((msg: string) => {
         const timestamp = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -167,90 +200,148 @@ export function EnhanceManager() {
         }
     }, [])
 
-    // 执行重置操作的核心函数
-    const executeResetOperation = useCallback(async () => {
-        addLog('========== 定时重置开始 ==========')
+    // 路由监听
+    const { currentPath, isSubscriptionPage } = useRouteWatch()
 
-        // 1. 先刷新页面获取最新状态
-        addLog('步骤 1: 刷新页面获取最新状态...')
-        const refreshBtn = document.querySelector('button:has(.lucide-refresh-cw)') as HTMLButtonElement
-        if (refreshBtn) {
-            refreshBtn.click()
-            await new Promise(r => setTimeout(r, 2000))
-            addLog('页面已刷新')
+    // 订阅扫描和选择
+    const initialSelectedIds = (GM_getValue(CONFIG_KEYS.SELECTED_SUBSCRIPTION_IDS, []) as string[])
+    const initialSubscriptions = (GM_getValue(CONFIG_KEYS.SUBSCRIPTIONS, []) as SubscriptionInfo[])
+    const {
+        subscriptions,
+        selectedIds: selectedSubscriptionIds,
+        toggleSelection: toggleSubscription,
+        selectAll: selectAllSubscriptions,
+        deselectAll: deselectAllSubscriptions,
+        scan: scanSubscriptions,
+        isScanning,
+    } = useSubscriptions({
+        initialSelectedIds,
+        initialSubscriptions,
+        onSelectionChange: (ids) => {
+            GM_setValue(CONFIG_KEYS.SELECTED_SUBSCRIPTION_IDS, ids)
+        },
+        onSubscriptionsChange: (subs) => {
+            // 持久化订阅列表
+            GM_setValue(CONFIG_KEYS.SUBSCRIPTIONS, subs)
+            console.log('[88tools] 订阅列表已持久化:', subs.length, '条')
+        },
+        onCleanupIds: (validIds) => {
+            // 垃圾清理：更新持久化存储
+            GM_setValue(CONFIG_KEYS.SELECTED_SUBSCRIPTION_IDS, validIds)
+            console.log('[88tools] 已清理无效订阅 ID，剩余:', validIds.length)
+        },
+    })
+
+    // 执行重置操作的核心函数 (API Version)
+    // force: true 表示强制重置（忽略冷却状态）
+    const executeResetOperation = useCallback(async (force: boolean = false) => {
+        addLog(`========== ${force ? '手动' : '定时'}重置开始 (API模式) ==========`)
+
+        if (selectedSubscriptionIds.size === 0) {
+            addLog('警告: 未选择任何订阅，跳过重置')
+            addLog('========== 重置结束 ==========')
+            return
         }
 
-        // 辅助函数：等待对话框关闭
-        const waitForDialogClose = () => new Promise<void>(resolve => {
-            const checkInterval = setInterval(() => {
-                const dialog = document.querySelector('[role="dialog"], [data-state="open"]')
-                if (!dialog) {
-                    clearInterval(checkInterval)
-                    resolve()
-                }
-            }, 200)
-            setTimeout(() => { clearInterval(checkInterval); resolve() }, 3000)
-        })
+        // 1. 刷新订阅数据
+        addLog('步骤 1: 刷新订阅数据...')
+        await scanSubscriptions()
 
-        // 2. 查找所有订阅卡片和对应的重置按钮
-        addLog('步骤 2: 查找可重置的订阅...')
-        const cards = Array.from(document.querySelectorAll('[data-slot="card"]'))
+        // 等待扫描完成
+        await new Promise(r => setTimeout(r, 1000))
+
         let resetCount = 0
         let skipCount = 0
+        let errorCount = 0
 
-        for (const card of cards) {
-            const titleEl = card.querySelector('h4, .font-semibold')
-            const subscriptionName = titleEl?.textContent?.trim() || '未知订阅'
+        for (const sub of subscriptions) {
+            if (!selectedSubscriptionIds.has(sub.id)) continue
 
-            const buttons = Array.from(card.querySelectorAll('button'))
-            const resetBtn = buttons.find(b =>
-                b.getAttribute('data-slot') === 'tooltip-trigger' &&
-                (b.textContent?.includes('冷却') || b.textContent?.includes('重置'))
-            ) as HTMLButtonElement | undefined
-
-            if (!resetBtn) continue
-
-            if (resetBtn.disabled || resetBtn.textContent?.includes('冷却')) {
-                addLog(`跳过 [${subscriptionName}]: 冷却中`)
+            // 非强制模式下检查是否可重置
+            if (!force && !sub.canReset) {
+                addLog(`跳过 [${sub.name}]: ${sub.isOnCooldown ? '冷却中' : '不可重置'}`)
                 skipCount++
                 continue
             }
 
-            addLog(`重置 [${subscriptionName}]: 点击重置按钮...`)
-            resetBtn.click()
-            await new Promise(r => setTimeout(r, 800))
+            if (!sub.backendId) {
+                addLog(`错误 [${sub.name}]: 未找到后端 ID，无法通过 API 重置`)
+                errorCount++
+                continue
+            }
 
-            const dialogBtns = Array.from(document.querySelectorAll('button'))
-            const confirmBtn = dialogBtns.find(b =>
-                b.textContent?.trim() === '重置' &&
-                b.offsetParent !== null &&
-                !b.textContent?.includes('冷却') &&
-                !b.textContent?.includes('额度')
-            ) as HTMLButtonElement | undefined
+            try {
+                addLog(`重置 [${sub.name}]: 发送请求...${force && sub.isOnCooldown ? ' (强制)' : ''}`)
 
-            if (confirmBtn) {
-                confirmBtn.click()
-                addLog(`重置 [${subscriptionName}]: ✓ 成功`)
-                resetCount++
-                await waitForDialogClose()
-                await new Promise(r => setTimeout(r, 1500))
-            } else {
-                addLog(`重置 [${subscriptionName}]: ✗ 对话框未出现`)
+                // 获取 token
+                const token = localStorage.getItem('authToken')
+                const headers: HeadersInit = {
+                    'Content-Type': 'application/json'
+                }
+                if (token) {
+                    headers['Authorization'] = `Bearer ${token}`
+                }
+
+                const response = await fetch(`/admin-api/cc-admin/system/subscription/my/reset-credits/${sub.backendId}`, {
+                    method: 'POST',
+                    headers
+                })
+
+                if (response.ok) {
+                    addLog(`重置 [${sub.name}]: ✓ 成功`)
+                    resetCount++
+                } else {
+                    const text = await response.text().catch(() => '')
+                    addLog(`重置 [${sub.name}]: ✗ 失败 (Status: ${response.status}) ${text}`)
+                    errorCount++
+                }
+
+                // 间隔一下，避免请求过快
+                await new Promise(r => setTimeout(r, 500))
+
+            } catch (error) {
+                addLog(`重置 [${sub.name}]: ✗ 网络错误`)
+                console.error(error)
+                errorCount++
             }
         }
 
-        addLog('步骤 3: 刷新页面...')
-        const refreshBtn2 = document.querySelector('button:has(.lucide-refresh-cw)') as HTMLButtonElement
-        if (refreshBtn2) {
-            refreshBtn2.click()
-        }
+        addLog('步骤 2: 刷新订阅数据...')
+        await scanSubscriptions()
 
         addLog(`========== 重置完成 ==========`)
-        addLog(`✓ 成功: ${resetCount} 个, ○ 跳过: ${skipCount} 个`)
-    }, [addLog])
+        addLog(`✓ 成功: ${resetCount}, ○ 跳过: ${skipCount}, ✗ 失败: ${errorCount}`)
+    }, [addLog, selectedSubscriptionIds, subscriptions, scanSubscriptions])
 
-    // 路由监听
-    const { currentPath, isSubscriptionPage } = useRouteWatch()
+    // 手动强制重置
+    const [isResetting, setIsResetting] = useState(false)
+    const handleForceReset = useCallback(async () => {
+        if (isResetting) return
+        setIsResetting(true)
+        try {
+            await executeResetOperation(true)
+        } finally {
+            setIsResetting(false)
+        }
+    }, [executeResetOperation, isResetting])
+
+    // 清空所有缓存
+    const handleClearCache = useCallback(() => {
+        // 删除所有存储的数据
+        Object.values(CONFIG_KEYS).forEach(key => {
+            if (typeof key === 'string' && key.startsWith('88tools_')) {
+                GM_deleteValue(key)
+            }
+        })
+        // 删除 localStorage 中的 pending reset 标记
+        try {
+            localStorage.removeItem(PENDING_RESET_KEY)
+        } catch { }
+        console.log('[88tools] 缓存已清空')
+        // 刷新页面
+        window.location.reload()
+    }, [])
+
 
     // 服务状态 - 只在订阅页且开启时运行
     const { data: statusData, isLoading: statusLoading, error: statusError, refresh: refreshStatus, lastUpdated } = useServiceStatus(
@@ -341,57 +432,63 @@ export function EnhanceManager() {
     // 创建服务状态注入容器
     useEffect(() => {
         if (!isSubscriptionPage || !config.showServiceStatus) {
-            // 移除已存在的容器
             const existing = document.getElementById('enhance-service-status-container')
             if (existing) existing.remove()
             setStatusContainer(null)
             return
         }
 
-        // 查找"当前活跃订阅"卡片
+        // 防止重复创建
+        let isMounted = true
+
         const findInsertPoint = () => {
             const cards = Array.from(document.querySelectorAll('[data-slot="card"]'))
-            const subscriptionCard = cards.find(card =>
+            return cards.find(card =>
                 card.textContent?.includes('当前活跃订阅') ||
                 card.textContent?.includes('Current Active')
             )
-            return subscriptionCard
         }
 
         const insertContainer = () => {
-            // 如果已存在则使用现有容器
-            let container = document.getElementById('enhance-service-status-container')
-            if (container) {
-                setStatusContainer(container)
-                return
+            if (!isMounted) return
+
+            // 已存在则直接使用
+            const existing = document.getElementById('enhance-service-status-container')
+            if (existing) {
+                setStatusContainer(existing)
+                return true  // 返回 true 表示已成功
             }
 
             const subscriptionCard = findInsertPoint()
-            if (subscriptionCard && subscriptionCard.parentElement) {
-                container = document.createElement('div')
+            if (subscriptionCard?.parentElement) {
+                const container = document.createElement('div')
                 container.id = 'enhance-service-status-container'
                 container.style.marginBottom = '24px'
                 subscriptionCard.parentElement.insertBefore(container, subscriptionCard)
                 setStatusContainer(container)
                 console.log('[88tools] 服务状态容器已创建')
-            } else {
-                console.log('[88tools] 未找到"当前活跃订阅"卡片，稍后重试...')
+                return true
             }
+            return false
         }
 
-        // 延迟执行，等待 SPA 渲染
-        const timer = setTimeout(insertContainer, 1000)
-
-        // 定期检查（SPA 路由切换后可能需要重新注入）
-        const interval = setInterval(() => {
-            if (!document.getElementById('enhance-service-status-container')) {
-                insertContainer()
+        // 只尝试一次，成功就不再重试
+        const timer = setTimeout(() => {
+            if (!insertContainer()) {
+                // 首次失败，启动轮询
+                const interval = setInterval(() => {
+                    if (insertContainer()) {
+                        clearInterval(interval)
+                    }
+                }, 2000)
+                // 10秒后停止轮询
+                setTimeout(() => clearInterval(interval), 10000)
             }
-        }, 2000)
+        }, 500)
 
         return () => {
+            isMounted = false
             clearTimeout(timer)
-            clearInterval(interval)
         }
     }, [isSubscriptionPage, config.showServiceStatus])
 
@@ -421,6 +518,20 @@ export function EnhanceManager() {
                 resetStatus={resetStatus}
                 resetLogs={logs}
                 onClearLogs={clearLogs}
+                // 订阅相关
+                subscriptions={subscriptions}
+                selectedSubscriptionIds={selectedSubscriptionIds}
+                onToggleSubscription={toggleSubscription}
+                onSelectAllSubscriptions={selectAllSubscriptions}
+                onDeselectAllSubscriptions={deselectAllSubscriptions}
+                onScanSubscriptions={scanSubscriptions}
+                isScanning={isScanning}
+                isSubscriptionPage={isSubscriptionPage}
+                // 手动重置
+                onForceReset={handleForceReset}
+                isResetting={isResetting}
+                // 清空缓存
+                onClearCache={handleClearCache}
             />
             {/* 使用 Portal 将服务状态卡片注入到订阅页 */}
             {statusContainer && config.showServiceStatus && createPortal(
