@@ -1,0 +1,28 @@
+/* 88tools 增强脚本样式 */
+
+/* 根容器 */
+#88tools-enhance-root {
+  position: relative;
+  z-index: 99999;
+}
+
+/* 彩虹动画 */
+@keyframes ray-animate {
+  0% {
+    background-position: 50% 50%, 50% 50%;
+  }
+
+  100% {
+    background-position: 350% 50%, 350% 50%;
+  }
+}
+
+.ray::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: var(--stripesDark), var(--rainbow);
+  background-size: 200%, 100%;
+  mix-blend-mode: difference;
+  animation: ray-animate 90s linear infinite;
+}
