@@ -2,9 +2,10 @@ name: Build
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
+    tags: ['v*']
   pull_request:
-    branches: [main, dev]
+    branches: [main]
 
 jobs:
   build:
@@ -37,3 +38,11 @@ jobs:
           name: 88tools-userscript
           path: dist/88tools.user.js
           retention-days: 30
+
+      # Tag 发布时自动创建 GitHub Release
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/88tools.user.js
+          generate_release_notes: true
