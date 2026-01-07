@@ -20,6 +20,10 @@ export default defineConfig({
         author: 'authwang',
         match: ['https://www.88code.ai/*', 'https://88code.ai/*'],
         icon: 'https://www.88code.ai/assets/logo-BCIlXRt9.png',
+        homepage: 'https://github.com/Waasaabii/88tools',
+        supportURL: 'https://github.com/Waasaabii/88tools/issues',
+        updateURL: 'https://github.com/Waasaabii/88tools/releases/latest/download/88tools.user.js',
+        downloadURL: 'https://github.com/Waasaabii/88tools/releases/latest/download/88tools.user.js',
         grant: [
           'GM_setValue',
           'GM_getValue',
@@ -28,10 +32,8 @@ export default defineConfig({
         'run-at': 'document-end',
       },
       build: {
-        externalGlobals: {
-          react: ['React', 'https://unpkg.com/react@19/umd/react.production.min.js'],
-          'react-dom': ['ReactDOM', 'https://unpkg.com/react-dom@19/umd/react-dom.production.min.js'],
-        },
+        // React 19 没有 UMD 构建，必须打包进脚本
+        externalGlobals: {},
       },
     }),
   ],
